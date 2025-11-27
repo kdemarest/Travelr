@@ -74,7 +74,7 @@ export interface RedoCommand {
 const TRIP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const TRIP_ID_ARG_PATTERN = /\btripId="([^"]+)"/;
 const ARG_PATTERN = /([A-Za-z0-9_-]+)=("(?:[^"\\]|\\.)*"|[^\s]+)/g;
-const ACTIVITY_TYPES = new Set(["flight", "lodging", "transport", "visit", "meal", "hike"]);
+const ACTIVITY_TYPES = new Set(["flight", "lodging", "transport", "rentalCar", "visit", "meal", "hike"]);
 
 export function parseCommand(line: string): ParsedCommand {
   const trimmed = line.trim();

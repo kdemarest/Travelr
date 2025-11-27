@@ -264,7 +264,7 @@ function buildHelpMessage(): string {
     "",
     "/help - Show this list.",
     '/newtrip tripId="<id>" - Required: tripId (letters, numbers, _ or -). Creates or resets the trip.',
-    '/add activityType=<flight|lodging|transport|visit|meal|hike> field="value" ... - Required: activityType plus at least one additional field (name=, date=, etc.).',
+    '/add activityType=<flight|lodging|rentalCar|transport|visit|meal|hike> field="value" ... - Required: activityType plus at least one additional field (name=, date=, etc.).',
     '/edit uid=<activity-uid> field="value" ... - Required: uid and at least one field to update. Values use key=value syntax; wrap spaces in quotes.',
     '/delete uid=<activity-uid> - Removes the activity from the trip.',
     '/movedate from="YYYY-MM-DD" to="YYYY-MM-DD" - Move every activity on the from date to the new date.',
