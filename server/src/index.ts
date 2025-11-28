@@ -4,11 +4,18 @@ import morgan from "morgan";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "fs-extra";
-import { extractSlashCommandLines, parseCommand } from "./command.js";
+import {
+  extractSlashCommandLines,
+  formatCanonicalCommand,
+  parseCommand,
+  type CanonicalCommandContext
+} from "./command.js";
 import { CommandError, JournalError } from "./errors.js";
 import { JournalService } from "./journal.js";
 import { TripDocService } from "./tripdoc.js";
+import { ConversationStore } from "./conversation.js";
 import { generateUid } from "./uid.js";
+import { normalizeAllJournals } from "./journal-normalizer.js";
 import {
   DEFAULT_MODEL,
   checkOpenAIConnection,
@@ -18,12 +25,14 @@ import {
   setActiveModel
 } from "./gpt.js";
 import { handleGoogleSearch } from "./search.js";
+import type { TripModel } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dataDir = path.resolve(__dirname, "../../data");
 const journalService = new JournalService(dataDir);
 const tripDocService = new TripDocService(dataDir);
+const conversationStore = new ConversationStore(dataDir);
 
 async function ensureDataDir() {
   await fs.ensureDir(dataDir);
@@ -87,7 +96,7 @@ async function bootstrap() {
 
     try {
       const parsedCommands = commandLines.map((originalLine) => {
-        let line = originalLine;
+        let context: CanonicalCommandContext | undefined;
         let parsed = parseCommand(originalLine);
         if (parsed.type === "add") {
           if (parsed.uid) {
@@ -95,10 +104,9 @@ async function bootstrap() {
           }
           const generatedUid = generateUid();
           parsed = { ...parsed, uid: generatedUid };
-          const spacer = /\s$/.test(line) || line.length === 0 ? "" : " ";
-          line = `${line}${spacer}uid=${generatedUid}`;
+          context = { ...(context ?? {}), generatedUid };
         }
-        return { line, parsed };
+        return { parsed, context };
       });
       if (parsedCommands.some(({ parsed }) => parsed.type === "help")) {
         return res.status(200).json({ ok: true, executedCommands: 0, message: buildHelpMessage() });
@@ -126,8 +134,48 @@ async function bootstrap() {
         return res.status(webSearchResponse.status).json(webSearchResponse.body);
       }
 
+      const infoCommandEntry = parsedCommands.find(({ parsed }) => parsed.type === "info");
+      if (infoCommandEntry && infoCommandEntry.parsed.type === "info") {
+        console.log("Handling /info command", {
+          tripName,
+          topic: infoCommandEntry.parsed.topic ?? "(none)"
+        });
+        const infoResponse = handleInfoCommand(infoCommandEntry.parsed.topic);
+        return res.status(infoResponse.status).json(infoResponse.body);
+      }
+
+      const renormalizeCommandEntry = parsedCommands.find(({ parsed }) => parsed.type === "renormalize");
+      if (renormalizeCommandEntry) {
+        console.log("Handling /renormalize command", { tripName });
+        const summary = await normalizeAllJournals(dataDir);
+        const successCount = summary.results.length;
+        const failureCount = summary.failures.length;
+        const messageBase = `Re-normalized ${successCount} of ${summary.discovered} journal${
+          summary.discovered === 1 ? "" : "s"
+        }.`;
+        const message =
+          failureCount === 0
+            ? messageBase
+            : `${messageBase} ${failureCount} file${failureCount === 1 ? "" : "s"} failed.`;
+
+        return res.status(failureCount ? 207 : 200).json({
+          ok: failureCount === 0,
+          executedCommands: 0,
+          message,
+          normalized: summary.results.map((result) => ({
+            filePath: result.filePath,
+            tempPath: result.tempPath,
+            normalizedLines: result.normalizedLines,
+            skippedLines: result.skippedLines,
+            warnings: result.warnings
+          })),
+          failures: summary.failures
+        });
+      }
+
       type TimelineState = { head: number; total: number };
       const timelineStateByTrip = new Map<string, TimelineState>();
+      const modelSnapshotsByTrip = new Map<string, TripModel | null>();
       const infoMessages: string[] = [];
 
       const getTimelineState = async (name: string): Promise<TimelineState> => {
@@ -144,13 +192,34 @@ async function bootstrap() {
       let lastModel = null;
       let executed = 0;
       let currentTripName = tripName;
-      for (const { parsed, line } of parsedCommands) {
+      const getModelSnapshot = async (name: string): Promise<TripModel | null> => {
+        if (modelSnapshotsByTrip.has(name)) {
+          return modelSnapshotsByTrip.get(name) ?? null;
+        }
+        const model = await tripDocService.getExistingModel(name);
+        modelSnapshotsByTrip.set(name, model ?? null);
+        return model ?? null;
+      };
+
+      for (const entry of parsedCommands) {
+        const { parsed } = entry;
         const targetTrip = parsed.type === "newtrip" ? parsed.tripId : currentTripName;
         if (parsed.type === "newtrip") {
           currentTripName = parsed.tripId;
         }
 
         const timelineState = await getTimelineState(targetTrip);
+
+        let deleteContext: CanonicalCommandContext | undefined = entry.context ? { ...entry.context } : undefined;
+        if (parsed.type === "delete") {
+          const snapshot = await getModelSnapshot(targetTrip);
+          const activity = snapshot?.activities.find((item) => item.uid === parsed.uid);
+          if (activity) {
+            deleteContext = { ...(deleteContext ?? {}), deletedActivity: { ...activity } };
+          }
+        }
+
+        const canonicalLine = formatCanonicalCommand(parsed, deleteContext);
 
         if (parsed.type === "undo") {
           const nextHead = Math.max(0, timelineState.head - parsed.count);
@@ -174,8 +243,9 @@ async function bootstrap() {
           timelineState.head = timelineState.total;
         }
 
-        await journalService.appendCommand(targetTrip, parsed, line);
+        await journalService.appendCommand(targetTrip, parsed, canonicalLine);
         lastModel = await tripDocService.applyCommand(targetTrip, parsed);
+        modelSnapshotsByTrip.set(targetTrip, lastModel);
         executed += 1;
       }
 
@@ -204,15 +274,27 @@ async function bootstrap() {
     }
   });
 
+  app.get("/api/trip/:tripName/conversation", async (req, res) => {
+    const tripName = req.params.tripName;
+    try {
+      const history = await conversationStore.read(tripName);
+      res.json({ ok: true, history });
+    } catch (error) {
+      console.error("Failed to read conversation history", { tripName, error });
+      res.status(500).json({ ok: false, error: "Failed to load conversation history." });
+    }
+  });
+
   app.post("/api/trip/:tripName/chat", async (req, res) => {
     const tripName = req.params.tripName;
-    const { text, conversationHistory } = req.body ?? {};
+    const { text, conversationHistory, focusSummary } = req.body ?? {};
     if (typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Payload must include text." });
     }
 
     const normalizedInput = text.trim();
     const normalizedHistory = typeof conversationHistory === "string" ? conversationHistory : undefined;
+    const normalizedFocus = typeof focusSummary === "string" ? focusSummary : undefined;
     console.log("/chat payload received", {
       tripName,
       textLength: normalizedInput.length,
@@ -228,12 +310,15 @@ async function bootstrap() {
         return res.status(404).json({ error: `Trip ${tripName} does not exist.` });
       }
 
+      await conversationStore.write(tripName, normalizedHistory ?? "");
+
       const result = await sendChatCompletion(normalizedInput, {
         temperature: 0.3,
         templateContext: {
           tripModel: model,
           userInput: normalizedInput,
-          conversationHistory: normalizedHistory
+          conversationHistory: normalizedHistory,
+          focusSummary: normalizedFocus
         }
       });
       console.log("/chat completion result", {
@@ -270,7 +355,9 @@ function buildHelpMessage(): string {
     '/movedate from="YYYY-MM-DD" to="YYYY-MM-DD" - Move every activity on the from date to the new date.',
     '/trip [tripId] - Without args lists known trips; with tripId it loads that trip for editing.',
     '/model [modelName] - Without args lists supported GPT models; with modelName switches the active model.',
-    '/websearch query="search" - Performs a background web search (results currently hidden).'
+    '/websearch query="search" - Performs a background web search (results currently hidden).',
+    '/info [topic] - Placeholder hook for requesting stored user profile info.',
+    '/renormalize - Maintenance command that rewrites every journal into canonical form. Run manually; the chatbot never invokes this.'
   ].join("\n");
 }
 
@@ -361,6 +448,21 @@ async function handleWebSearchCommand(query: string): Promise<{ status: number; 
       }
     };
   }
+}
+
+function handleInfoCommand(topic?: string): { status: number; body: Record<string, unknown> } {
+  const normalizedTopic = topic?.trim();
+  const message = normalizedTopic
+    ? `Info command for "${normalizedTopic}" acknowledged. No action taken yet.`
+    : "Info command acknowledged. No action taken yet.";
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      executedCommands: 0,
+      message
+    }
+  };
 }
 
 function summarizeLineEndings(value: string) {

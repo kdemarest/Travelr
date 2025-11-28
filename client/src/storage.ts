@@ -1,8 +1,8 @@
 const LAST_TRIP_STORAGE_KEY = "travelr:lastTripId";
-const SELECTED_DATE_KEY_PREFIX = "travelr:selectedDate:";
-const SELECTED_ACTIVITY_KEY_PREFIX = "travelr:selectedActivity:";
+const FOCUSED_DATE_KEY_PREFIX = "travelr:focusedDate:";
+const FOCUSED_ACTIVITY_KEY_PREFIX = "travelr:focusedActivity:";
 
-export function readLastTripId(): string | null {
+export function loadLastTripId(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -13,7 +13,7 @@ export function readLastTripId(): string | null {
   }
 }
 
-export function persistLastTripId(tripId: string) {
+export function saveLastTripId(tripId: string) {
   if (typeof window === "undefined") {
     return;
   }
@@ -24,77 +24,74 @@ export function persistLastTripId(tripId: string) {
   }
 }
 
-export function readSelectedDate(tripId: string | null): string | null {
+export function loadFocusedDate(tripId: string | null): string | null {
   if (!tripId || typeof window === "undefined") {
     return null;
   }
   try {
-    return window.localStorage.getItem(getSelectedDateKey(tripId));
-  } catch {
-    return null;
-  }
-}
-
-export function persistSelectedDate(tripId: string, dateKey: string) {
-  if (!tripId || typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(getSelectedDateKey(tripId), dateKey);
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-export function clearSelectedDate(tripId: string) {
-  if (!tripId || typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.removeItem(getSelectedDateKey(tripId));
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function getSelectedDateKey(tripId: string) {
-  return `${SELECTED_DATE_KEY_PREFIX}${tripId}`;
-}
-
-export function readSelectedActivityUid(tripId: string | null): string | null {
-  if (!tripId || typeof window === "undefined") {
-    return null;
-  }
-  try {
-    return window.localStorage.getItem(getSelectedActivityKey(tripId));
+    return window.localStorage.getItem(getFocusedDateStorageKey(tripId));
   } catch {
     return null;
   }
 }
 
-export function persistSelectedActivityUid(tripId: string, uid: string) {
+export function saveFocusedDate(tripId: string, date: string | null) {
   if (!tripId || typeof window === "undefined") {
     return;
   }
+  if (!date) {
+    try {
+      window.localStorage.removeItem(getFocusedDateStorageKey(tripId));
+    } catch {
+      // Ignore storage failures.
+    }
+    return;
+  }
   try {
-    window.localStorage.setItem(getSelectedActivityKey(tripId), uid);
+    window.localStorage.setItem(getFocusedDateStorageKey(tripId), date);
   } catch {
     // Ignore storage failures.
   }
 }
 
-export function clearSelectedActivityUid(tripId: string) {
+function getFocusedDateStorageKey(tripId: string) {
+  return `${FOCUSED_DATE_KEY_PREFIX}${tripId}`;
+}
+
+export function loadFocusedActivityUid(tripId: string | null): string | null {
+  if (!tripId || typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(getFocusedActivityStorageKey(tripId));
+  } catch {
+    return null;
+  }
+}
+
+export function saveFocusedActivityUid(tripId: string, uid: string) {
   if (!tripId || typeof window === "undefined") {
     return;
   }
   try {
-    window.localStorage.removeItem(getSelectedActivityKey(tripId));
+    window.localStorage.setItem(getFocusedActivityStorageKey(tripId), uid);
   } catch {
     // Ignore storage failures.
   }
 }
 
-function getSelectedActivityKey(tripId: string) {
+export function clearFocusedActivityUid(tripId: string) {
+  if (!tripId || typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(getFocusedActivityStorageKey(tripId));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function getFocusedActivityStorageKey(tripId: string) {
   const normalized = tripId.trim();
-  return `${SELECTED_ACTIVITY_KEY_PREFIX}${normalized}`;
+  return `${FOCUSED_ACTIVITY_KEY_PREFIX}${normalized}`;
 }

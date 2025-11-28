@@ -30,9 +30,10 @@ export type PlanLine =
   | { kind: "undated"; label: string }
   | {
       kind: "dated";
-      dateKey: string;
+      date: string;
       displayDate: string;
       fullDisplayDate: string;
       notation: string;
       activities: Activity[];
+      primaryActivityUid?: string | null;
     };

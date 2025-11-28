@@ -2,13 +2,15 @@ import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { Activity } from "../types";
 import { describeActivity } from "../view/view-plan";
+import { dateLinkStyles, renderTextWithDateLinks } from "../date-link";
+import { formatMonthDayLabel } from "../datetime";
 
 @customElement("panel-activity")
 export class PanelActivity extends LitElement {
   @property({ attribute: false }) activity: Activity | null = null;
   @property({ type: Boolean }) canCreate = false;
 
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
       color: #0f172a;
@@ -40,6 +42,12 @@ export class PanelActivity extends LitElement {
       font-weight: 600;
       color: #0f172a;
       flex: 1;
+    }
+
+    .reservation-warning {
+      color: #b91c1c;
+      font-weight: 600;
+      font-size: 0.9rem;
     }
 
     .create-button {
@@ -107,7 +115,7 @@ export class PanelActivity extends LitElement {
       text-transform: uppercase;
       margin-top: auto;
     }
-  `;
+  `, dateLinkStyles];
 
   render() {
     if (!this.activity) {
@@ -120,6 +128,7 @@ export class PanelActivity extends LitElement {
     const { priceText, statusText } = buildPriceAndStatus(activity);
     const description = extractDescription(activity);
     const extras = buildExtraFields(activity);
+    const showReservationWarning = shouldShowReservationWarning(activity);
 
     return html`
       <div class="card">
@@ -134,21 +143,25 @@ export class PanelActivity extends LitElement {
             +
           </button>
         </div>
-        ${dateLine ? html`<div class="line">${dateLine}</div>` : null}
+        ${showReservationWarning ? html`<div class="reservation-warning">Reservations are needed.</div>` : null}
+        ${dateLine ? html`<div class="line">${this.renderDateLinkedText(dateLine)}</div>` : null}
         ${(priceText || statusText)
           ? html`<div class="line price-status">
               <span>Price: ${priceText ?? "—"}</span>
               <span>Status: ${statusText ?? "—"}</span>
             </div>`
           : null}
-        ${description ? html`<div class="line">${description}</div>` : null}
+        ${description ? html`<div class="line">${this.renderDateLinkedText(description)}</div>` : null}
         ${extras.length
           ? html`<ul class="extra-list">
               ${extras.map(
-                (entry) => html`<li class="extra-item">
+                (entry) => {
+                  const isNotes = entry.key.trim().toLowerCase() === "notes";
+                  return html`<li class="extra-item">
                   <span class="extra-key">${entry.key}:</span>
-                  <span>${entry.value}</span>
-                </li>`
+                  <span>${isNotes ? this.renderDateLinkedText(entry.value) : entry.value}</span>
+                </li>`;
+                }
               )}
             </ul>`
           : null}
@@ -167,6 +180,21 @@ export class PanelActivity extends LitElement {
       new CustomEvent("panel-activity-create", {
         bubbles: true,
         composed: true
+      })
+    );
+  }
+
+  private renderDateLinkedText(text: string | null | undefined) {
+    const value = text ?? "";
+    return renderTextWithDateLinks(value, (date) => this.emitDateLink(date));
+  }
+
+  private emitDateLink(date: string) {
+    this.dispatchEvent(
+      new CustomEvent("panel-date-link-click", {
+        bubbles: true,
+        composed: true,
+        detail: { date }
       })
     );
   }
@@ -276,14 +304,7 @@ function getStops(source: Record<string, unknown>): number | null {
 }
 
 function formatDate(value?: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatMonthDayLabel(value, { month: "short", day: "numeric" });
 }
 
 function formatTime(value?: string | null): string | null {
@@ -317,6 +338,26 @@ function buildPriceAndStatus(activity: Activity): { priceText: string | null; st
   const priceText = formatPrice(activity.price, activity.currency);
   const statusText = activity.status ? capitalize(activity.status) : null;
   return { priceText, statusText };
+}
+
+function shouldShowReservationWarning(activity: Activity): boolean {
+  const status = activity.status?.trim().toLowerCase();
+  if (status !== "idea" && status !== "planned") {
+    return false;
+  }
+  const record = activity as Activity & Record<string, unknown>;
+  const rawNeeded = record.reservationNeeded;
+  if (typeof rawNeeded === "boolean") {
+    return rawNeeded;
+  }
+  if (typeof rawNeeded === "string") {
+    const normalized = rawNeeded.trim().toLowerCase();
+    return normalized === "true" || normalized === "yes" || normalized === "1";
+  }
+  if (typeof rawNeeded === "number") {
+    return rawNeeded !== 0;
+  }
+  return false;
 }
 
 function formatPrice(price?: number | string | null, currency?: string | null): string | null {

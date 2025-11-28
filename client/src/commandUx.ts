@@ -13,7 +13,8 @@ const KNOWN_COMMANDS = new Set([
   "/movedate",
   "/undo",
   "/redo",
-  "/websearch"
+  "/websearch",
+  "/info"
 ]);
 
 export interface CommandProcessingResult {
@@ -36,7 +37,7 @@ interface CommandResponse {
 export interface CommandUxOptions {
   text: string;
   currentTripId: string;
-  selectedUid: string | null;
+  focusedUid: string | null;
   appendMessage: (message: string, options?: { isUser?: boolean; conversationText?: string }) => void;
   setSending: (sending: boolean) => void;
   rememberTripModel: (model: TripModel) => void;
@@ -44,7 +45,7 @@ export interface CommandUxOptions {
 }
 
 export async function processUserCommand(options: CommandUxOptions): Promise<CommandProcessingResult> {
-  const preparedText = prepareOutgoingText(options.text, options.selectedUid);
+  const preparedText = prepareOutgoingText(options.text, options.focusedUid);
   if (options.echoCommands ?? true) {
     options.appendMessage(preparedText, {
       isUser: true,
@@ -93,18 +94,18 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
   }
 }
 
-export function prepareOutgoingText(input: string, selectedUid: string | null, referenceDate = new Date()): string {
+export function prepareOutgoingText(input: string, focusedUid: string | null, referenceDate = new Date()): string {
   return input
     .split(/\r?\n/)
-    .map((line) => convertUnknownCommandToEdit(line, selectedUid))
-    .map((line) => injectSelectedUidIntoEdit(line, selectedUid))
+    .map((line) => convertUnknownCommandToEdit(line, focusedUid))
+    .map((line) => injectFocusedUidIntoEdit(line, focusedUid))
     .map((line) => normalizeDateFields(line, referenceDate))
     .map((line) => normalizeTimeFields(line))
     .join("\n");
 }
 
-function convertUnknownCommandToEdit(line: string, selectedUid: string | null): string {
-  if (!selectedUid) {
+function convertUnknownCommandToEdit(line: string, focusedUid: string | null): string {
+  if (!focusedUid) {
     return line;
   }
 
@@ -131,7 +132,7 @@ function convertUnknownCommandToEdit(line: string, selectedUid: string | null): 
   }
 
   const encodedValue = JSON.stringify(rawValue);
-  return `${leadingWhitespace}/edit ${selectedUid} ${fieldName}=${encodedValue}`;
+  return `${leadingWhitespace}/edit ${focusedUid} ${fieldName}=${encodedValue}`;
 }
 
 const DATE_ARG_PATTERN = /\bdate=("(?:\\.|[^"\\])*"|[^\s]+)/gi;
@@ -189,8 +190,8 @@ function decodeArgumentValue(value: string): string | null {
   return value;
 }
 
-export function injectSelectedUidIntoEdit(line: string, selectedUid: string | null): string {
-  if (!selectedUid) {
+export function injectFocusedUidIntoEdit(line: string, focusedUid: string | null): string {
+  if (!focusedUid) {
     return line;
   }
 
@@ -215,7 +216,7 @@ export function injectSelectedUidIntoEdit(line: string, selectedUid: string | nu
   }
 
   const spacer = rest.length ? " " : "";
-  return `${leadingWhitespace}/edit ${selectedUid}${spacer}${rest}`;
+  return `${leadingWhitespace}/edit ${focusedUid}${spacer}${rest}`;
 }
 
 export function extractSlashCommandLines(text: string): string[] {

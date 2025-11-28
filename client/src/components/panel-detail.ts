@@ -1,14 +1,29 @@
 import { LitElement, PropertyValues, css, html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
+import { dateLinkStyles, renderTextWithDateLinks } from "../date-link";
+import { parseCanonicalCommand } from "../command-parse";
+import type { Activity } from "../types";
+import { formatMonthDayLabel } from "../datetime";
 
 export type PanelDetailLogEntry =
   | { id: string; kind: "text"; text: string; isUser?: boolean }
   | { id: string; kind: "search"; summary: string; snippets: string[] };
 
+type LinkMarkup = {
+  type: "activity" | "date";
+  value: string;
+  label: string;
+};
+
+type CommandRenderContext = {
+  entryId: string;
+  nextIndex: number;
+};
+
 const PENDING_TIMEOUT_MS = 4000;
 
 export class PanelDetail extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: flex;
       flex-direction: column;
@@ -39,6 +54,71 @@ export class PanelDetail extends LitElement {
       border-radius: 6px;
       padding: 0.25rem 0.4rem;
       display: inline-block;
+    }
+
+    .link-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      padding: 0.02rem 0.25rem;
+      margin: 0 0.05rem;
+      border-radius: 4px;
+      border: 1px solid #94a3b8;
+      background: #fff;
+      font-size: 0.75rem;
+      line-height: 1.1;
+      vertical-align: middle;
+      cursor: pointer;
+      color: #0f172a;
+    }
+
+    .link-chip:hover {
+      border-color: #1d4ed8;
+      color: #1d4ed8;
+    }
+
+    .command-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      padding: 0.1rem 0.4rem;
+      margin: 0.1rem 0.2rem 0.1rem 0;
+      border-radius: 6px;
+      border: 1px solid #d4b5ff;
+      background: #f6f0ff;
+      font-size: 0.8rem;
+      line-height: 1.1;
+      cursor: pointer;
+      color: #0f172a;
+    }
+
+    .command-chip:hover,
+    .command-chip:focus-visible {
+      border-color: #a855f7;
+      background: #ede3ff;
+      outline: none;
+    }
+
+    .command-chip-wrapper {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin: 0.1rem 0.3rem 0.1rem 0;
+      flex-wrap: wrap;
+    }
+
+    .command-full-text {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.8rem;
+      border: 1px dashed #cbd5f5;
+      border-radius: 4px;
+      padding: 0.05rem 0.35rem;
+      background: #fff;
+      color: #1e293b;
+      white-space: pre-wrap;
+      display: inline-block;
+      padding-left: 0.75rem;
+      text-indent: -0.75rem;
     }
 
     .search-entry {
@@ -142,23 +222,27 @@ export class PanelDetail extends LitElement {
       opacity: 0.6;
       cursor: not-allowed;
     }
-  `;
+  `, dateLinkStyles];
 
   static properties = {
     messages: { type: Array },
     serverBusy: { type: Boolean },
+    activities: { type: Array },
     draft: { state: true },
     pending: { state: true }
   } as const;
 
   messages: PanelDetailLogEntry[] = [];
   serverBusy = false;
+  activities: Activity[] = [];
   draft = "";
   pending = false;
 
   private pendingTimeout?: number;
   private logEl?: HTMLDivElement;
   private expandedEntries = new Set<string>();
+  private expandedCommandKeys = new Set<string>();
+  private activityByUid = new Map<string, Activity>();
 
   protected updated(changed: PropertyValues<PanelDetail>) {
     this.logEl = this.renderRoot?.querySelector<HTMLDivElement>(".log") ?? undefined;
@@ -170,10 +254,25 @@ export class PanelDetail extends LitElement {
           this.expandedEntries.delete(id);
         }
       }
+      for (const key of Array.from(this.expandedCommandKeys)) {
+        const keyId = key.split(":", 1)[0];
+        if (!ids.has(keyId)) {
+          this.expandedCommandKeys.delete(key);
+        }
+      }
     }
 
     if (changed.has("serverBusy") && !this.serverBusy) {
       this.clearPending();
+    }
+
+    if (changed.has("activities")) {
+      this.activityByUid.clear();
+      for (const activity of this.activities ?? []) {
+        if (activity?.uid) {
+          this.activityByUid.set(activity.uid, activity);
+        }
+      }
     }
   }
 
@@ -266,18 +365,18 @@ export class PanelDetail extends LitElement {
   private renderLogEntry(entry: PanelDetailLogEntry) {
     if (entry.kind === "text") {
       const classes = { "log-line": true, "user-message": Boolean(entry.isUser) };
-      return html`<div class=${classMap(classes)}>${entry.text}</div>`;
+      return html`<div class=${classMap(classes)}>${this.renderTextWithLinks(entry.text, entry.id)}</div>`;
     }
     const expanded = this.expandedEntries.has(entry.id);
     return html`
       <div class="search-entry">
         <button class="search-toggle" @click=${() => this.toggleEntry(entry.id)}>
           <span class="search-chevron">${expanded ? "▼" : "▶"}</span>
-          <span>${entry.summary}</span>
+          <span>${this.renderDateLinkedTextNode(entry.summary)}</span>
         </button>
         ${expanded
           ? html`<ol class="search-results">
-              ${entry.snippets.map((snippet, index) => html`<li>${index + 1}. ${snippet}</li>`) }
+              ${entry.snippets.map((snippet, index) => html`<li>${index + 1}. ${this.renderDateLinkedTextNode(snippet)}</li>`) }
             </ol>`
           : null}
       </div>
@@ -339,6 +438,236 @@ export class PanelDetail extends LitElement {
         </div>
       </form>
     `;
+  }
+
+  private renderTextWithLinks(text: string, entryId?: string) {
+    const segments: Array<ReturnType<typeof html>> = [];
+    const regex = /<<(?:link|select)\s+([^>]+)>>/gi;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    const commandContext = entryId ? { entryId, nextIndex: 0 } : undefined;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        this.pushDecoratedText(segments, text.slice(lastIndex, match.index), commandContext);
+      }
+
+      const markup = this.parseLinkMarkup(match[1]);
+      if (markup) {
+        segments.push(
+          html`<button type="button" class="link-chip" @click=${() => this.handleLinkMarkup(markup)}>${markup.label}</button>`
+        );
+      } else {
+        this.pushDecoratedText(segments, match[0], commandContext);
+      }
+
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      this.pushDecoratedText(segments, text.slice(lastIndex), commandContext);
+    }
+
+    return segments;
+  }
+
+  private parseLinkMarkup(raw: string): LinkMarkup | null {
+    const attrRegex = /(type|uid|value|label)="([^"]*)"/gi;
+    const attrs = new Map<string, string>();
+    let match: RegExpExecArray | null = null;
+    while ((match = attrRegex.exec(raw)) !== null) {
+      attrs.set(match[1].toLowerCase(), match[2]);
+    }
+
+    const type = attrs.get("type");
+    if (type !== "activity" && type !== "date") {
+      return null;
+    }
+
+    const label = attrs.get("label")?.trim();
+    if (!label) {
+      return null;
+    }
+
+    if (type === "activity") {
+      const uid = attrs.get("uid")?.trim();
+      if (!uid) {
+        return null;
+      }
+      return { type, value: uid, label };
+    }
+
+    const value = attrs.get("value")?.trim();
+    if (!value) {
+      return null;
+    }
+    return { type, value, label };
+  }
+
+  private handleLinkMarkup(markup: LinkMarkup) {
+    this.dispatchEvent(
+      new CustomEvent("panel-detail-link", {
+        bubbles: true,
+        composed: true,
+        detail: markup
+      })
+    );
+  }
+
+  private pushDecoratedText(
+    target: Array<ReturnType<typeof html>>,
+    text: string,
+    commandContext?: CommandRenderContext
+  ) {
+    const lines = text.split("\n");
+    lines.forEach((line, index) => {
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith("/")) {
+        const key = commandContext ? `${commandContext.entryId}:${commandContext.nextIndex++}` : undefined;
+        target.push(this.renderCommandChip(trimmed, key));
+      } else if (line.length) {
+        this.renderDateLinkedTextSegments(line).forEach((segment) => {
+          if (typeof segment === "string") {
+            target.push(html`${segment}`);
+          } else {
+            target.push(segment);
+          }
+        });
+      }
+      if (index < lines.length - 1) {
+        target.push(html`\n`);
+      }
+    });
+  }
+
+  private renderDateLinkedTextNode(text: string | null | undefined) {
+    const segments = this.renderDateLinkedTextSegments(text);
+    return html`${segments}`;
+  }
+
+  private renderDateLinkedTextSegments(text: string | null | undefined) {
+    const value = text ?? "";
+    return renderTextWithDateLinks(value, (date) => this.emitDateLink(date));
+  }
+
+  private renderCommandChip(command: string, key?: string) {
+    const expanded = key ? this.expandedCommandKeys.has(key) : false;
+    const labelText = this.buildCommandChipLabel(command);
+    const parsed = parseCanonicalCommand(command);
+    const commandUid = parsed?.args.uid ?? null;
+    const button = html`<button
+      type="button"
+      class="command-chip"
+      title=${command}
+      @click=${() => this.handleCommandChipToggle(key, commandUid)}
+    >${labelText}</button>`;
+    if (!key) {
+      return button;
+    }
+    return html`<span class="command-chip-wrapper">
+      ${button}
+      ${expanded ? html`<span class="command-full-text">${this.renderCommandFullText(command)}</span>` : null}
+    </span>`;
+  }
+
+  private renderCommandFullText(command: string) {
+    const formatted = command.replace(/\s+(?=[A-Za-z0-9_-]+=(?:"(?:\\.|[^"])*"|\S)+)/g, "\n");
+    return this.renderDateLinkedTextNode(formatted);
+  }
+
+  private handleCommandChipToggle(key?: string, activityUid?: string | null) {
+    if (!key) {
+      return;
+    }
+    if (this.expandedCommandKeys.has(key)) {
+      this.expandedCommandKeys.delete(key);
+    } else {
+      this.expandedCommandKeys.add(key);
+      if (activityUid) {
+        this.dispatchEvent(
+          new CustomEvent("panel-command-activity-select", {
+            bubbles: true,
+            composed: true,
+            detail: { uid: activityUid }
+          })
+        );
+      }
+    }
+    this.requestUpdate();
+  }
+
+  private buildCommandChipLabel(commandLine: string): string {
+    const trimmed = commandLine.trim();
+    if (!trimmed.startsWith("/")) {
+      return this.clipCommandLabel(trimmed);
+    }
+    const parsed = parseCanonicalCommand(trimmed);
+    if (!parsed) {
+      return this.clipCommandLabel(trimmed);
+    }
+    const command = parsed.keyword;
+    const lowered = command.toLowerCase();
+    if (lowered === "/delete") {
+      const uid = parsed.args.uid;
+      const label = [command, uid].filter(Boolean).join(" ").trim() || command;
+      return this.clipCommandLabel(label);
+    }
+    if (lowered === "/add" || lowered === "/edit") {
+      const context = this.resolveCommandActivityContext(parsed);
+      const rawDate = context.date ?? null;
+      const formattedDate = this.formatChipDate(rawDate);
+      const name = context.name ?? undefined;
+      const pieces = [command];
+      if (formattedDate) {
+        pieces.push(formattedDate);
+      } else if (rawDate) {
+        pieces.push(rawDate);
+      }
+      if (name) {
+        pieces.push(name);
+      }
+      const label = pieces.join(" ").trim() || command;
+      return this.clipCommandLabel(label);
+    }
+    return this.clipCommandLabel(trimmed);
+  }
+
+  private resolveCommandActivityContext(parsed: ReturnType<typeof parseCanonicalCommand>): {
+    date: string | null;
+    name: string | null;
+  } {
+    const directDate = parsed?.args.date ?? null;
+    const directName = parsed?.args.name ?? null;
+    const uid = parsed?.args.uid;
+    if (!uid) {
+      return { date: directDate, name: directName };
+    }
+    const activity = this.activityByUid.get(uid);
+    return {
+      date: directDate ?? activity?.date ?? null,
+      name: directName ?? activity?.name ?? null
+    };
+  }
+
+  private formatChipDate(raw: string | null): string | null {
+    return formatMonthDayLabel(raw, { month: "short", day: "2-digit" });
+  }
+
+  private clipCommandLabel(label: string): string {
+    if (label.length <= 30) {
+      return label;
+    }
+    return `${label.slice(0, 27).trimEnd()}…`;
+  }
+
+  private emitDateLink(date: string) {
+    this.dispatchEvent(
+      new CustomEvent("panel-date-link-click", {
+        bubbles: true,
+        composed: true,
+        detail: { date }
+      })
+    );
   }
 }
 

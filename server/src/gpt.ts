@@ -47,6 +47,7 @@ interface PromptTemplateContext {
   tripModel: unknown;
   userInput: string;
   conversationHistory?: string;
+  focusSummary?: string;
 }
 
 export async function sendChatCompletion(
@@ -180,8 +181,17 @@ function renderPromptTemplate(template: string, context: PromptTemplateContext):
   const modelText = formatTripModel(context.tripModel);
   const userText = sanitizeUserInput(context.userInput);
   const historyText = formatConversationHistory(context.conversationHistory);
+  const focusText = formatFocusSummary(context.focusSummary);
   return replaceTemplateToken(
-    replaceTemplateToken(replaceTemplateToken(template, "{{tripModel}}", modelText), "{{conversationHistory}}", historyText),
+    replaceTemplateToken(
+      replaceTemplateToken(
+        replaceTemplateToken(template, "{{tripModel}}", modelText),
+        "{{conversationHistory}}",
+        historyText
+      ),
+      "{{focusSummary}}",
+      focusText
+    ),
     "{{userInput}}",
     userText
   );
@@ -215,6 +225,14 @@ function formatConversationHistory(value?: string): string {
   }
   const trimmed = value.trim();
   return trimmed.length ? trimmed : "(no recent conversation)";
+}
+
+function formatFocusSummary(value?: string): string {
+  if (typeof value !== "string") {
+    return "date is none. Activity uid is none.";
+  }
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : "date is none. Activity uid is none.";
 }
 
 function resolveModel(preferred?: string): string {

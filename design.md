@@ -136,6 +136,15 @@ Commands:
   Effect:
   Performs a background query that can later inform AI responses.
 
+(7) /renormalize
+  Maintenance-only command for human operators.
+
+  Syntax:
+  /renormalize
+
+  Effect:
+  Replays every journal in `data/`, emits normalized `.tmp` copies alongside the originals, and logs any skipped lines. The chatbot must never issue this command.
+
 ---------------------------------
 
 4. BACKEND (NODEJS + TYPESCRIPT)

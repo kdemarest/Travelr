@@ -251,3 +251,5 @@
 /add activityType=transport date="2025-12-20" time="08:15" name="Uber to Paris CDG" description="Uber ride from Place de l'Opéra to Paris Charles de Gaulle Airport. Scheduled to arrive by 09:30 for 11:30 flight departure." status="planned" uid=G7nIPwVGzf_
 /delete uid=joe
 /add activityType=visit date="2025-12-19" time="18:00" name="Setup Uber for Dec 20 flight" description="Arrange Uber ride to Paris CDG for the Dec 20 flight departing at 11:30. Confirm pickup time and details." status="idea" uid=G7nKu0Dtz__
+/edit G7arveNkCz_ time="12:00"
+/edit G7asWvSvJT_ time="15:00"

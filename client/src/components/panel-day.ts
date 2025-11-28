@@ -11,7 +11,7 @@ type PlanPanelElement = HTMLElement & {
 export class PanelDay extends LitElement {
   @property({ type: String }) title = "Day";
   @property({ attribute: false }) items: DayEntry[] = [];
-  @property({ type: String }) selectedUid: string | null = null;
+  @property({ type: String }) focusedUid: string | null = null;
   @state() private draggingUid: string | null = null;
   @state() private dropTargetIndex: number | null = null;
 
@@ -83,7 +83,7 @@ export class PanelDay extends LitElement {
       background: #eef2ff;
     }
 
-    .activity.selected {
+    .activity.focused {
       background: #e0e7ff;
       border-color: #818cf8;
     }
@@ -187,17 +187,17 @@ export class PanelDay extends LitElement {
 
   protected updated(changedProps: PropertyValues<this>) {
     super.updated(changedProps);
-    if ((changedProps.has("selectedUid") || changedProps.has("items")) && this.selectedUid) {
-      this.ensureSelectedActivityVisible();
+    if ((changedProps.has("focusedUid") || changedProps.has("items")) && this.focusedUid) {
+      this.ensureFocusedActivityVisible();
     }
   }
 
-  private ensureSelectedActivityVisible() {
+  private ensureFocusedActivityVisible() {
     const container = this.renderRoot.querySelector<HTMLElement>(".list");
-    if (!container || !this.selectedUid) {
+    if (!container || !this.focusedUid) {
       return;
     }
-    const uid = this.selectedUid;
+    const uid = this.focusedUid;
     const escapedUid = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(uid) : uid.replace(/"/g, '\"');
     const selector = `.activity[data-uid="${escapedUid}"]`;
     const row = container.querySelector<HTMLElement>(selector);
@@ -210,7 +210,7 @@ export class PanelDay extends LitElement {
     if (fullyVisible) {
       return;
     }
-    // Keep selected day activity in view so navigation feels consistent on initial load.
+    // Keep focused day activity in view so navigation feels consistent on initial load.
     row.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
@@ -219,18 +219,18 @@ export class PanelDay extends LitElement {
     if (!activity) {
       return null;
     }
-    const isSelected = this.selectedUid === activity.uid;
+    const isFocused = this.focusedUid === activity.uid;
     return html`<div
-      class=${classMap(this.buildActivityClasses({ index, uid: activity.uid, selected: isSelected }))}
+      class=${classMap(this.buildActivityClasses({ index, uid: activity.uid, focused: isFocused }))}
       data-index=${index}
       data-time=${item.time}
       data-uid=${activity.uid}
       tabindex="0"
       @mouseenter=${() => this.emitActivityHover(activity)}
       @focus=${() => this.emitActivityHover(activity)}
-      @click=${() => this.emitActivitySelect(activity)}
+      @click=${() => this.emitActivityFocus(activity)}
       @keydown=${(event: KeyboardEvent) => this.handleKey(event, activity)}
-      aria-selected=${isSelected}
+      aria-selected=${isFocused}
     >
       <span
         class="drag-hint"
@@ -245,11 +245,11 @@ export class PanelDay extends LitElement {
     </div>`;
   }
 
-  private buildActivityClasses(options: { index: number; uid?: string | null; selected?: boolean; placeholder?: boolean }) {
+  private buildActivityClasses(options: { index: number; uid?: string | null; focused?: boolean; placeholder?: boolean }) {
     return {
       activity: true,
       placeholder: Boolean(options.placeholder),
-      selected: Boolean(options.selected),
+      focused: Boolean(options.focused),
       "drop-target": this.dropTargetIndex === options.index,
       "dragging-source": Boolean(options.uid && this.draggingUid === options.uid)
     };
@@ -396,6 +396,7 @@ export class PanelDay extends LitElement {
     this.finishDrag();
   };
 
+
   private handleGlobalKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape" && this.dragContext) {
       event.preventDefault();
@@ -481,9 +482,9 @@ export class PanelDay extends LitElement {
     );
   }
 
-  private emitActivitySelect(activity: DayEntry["activity"]) {
+  private emitActivityFocus(activity: DayEntry["activity"]) {
     this.dispatchEvent(
-      new CustomEvent("day-activity-select", {
+      new CustomEvent("day-activity-focus", {
         detail: { activity },
         bubbles: true,
         composed: true
@@ -494,7 +495,7 @@ export class PanelDay extends LitElement {
   private handleKey(event: KeyboardEvent, activity: DayEntry["activity"]) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      this.emitActivitySelect(activity);
+      this.emitActivityFocus(activity);
     }
   }
 

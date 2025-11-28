@@ -9,9 +9,11 @@ export type ParsedCommand =
   | UndoCommand
   | RedoCommand
   | HelpCommand
+  | RenormalizeCommand
   | TripCommand
   | ModelCommand
-  | WebSearchCommand;
+  | WebSearchCommand
+  | InfoCommand;
 
 export interface NewTripCommand {
   type: "newtrip";
@@ -40,6 +42,10 @@ export interface HelpCommand {
   type: "help";
 }
 
+export interface RenormalizeCommand {
+  type: "renormalize";
+}
+
 export interface TripCommand {
   type: "trip";
   target?: string;
@@ -53,6 +59,11 @@ export interface ModelCommand {
 export interface WebSearchCommand {
   type: "websearch";
   query: string;
+}
+
+export interface InfoCommand {
+  type: "info";
+  topic?: string;
 }
 
 export interface MoveDateCommand {
@@ -97,12 +108,16 @@ export function parseCommand(line: string): ParsedCommand {
       return parseDelete(argsText);
     case "/help":
       return { type: "help" };
+    case "/renormalize":
+      return { type: "renormalize" };
     case "/trip":
       return parseTrip(argsText);
     case "/model":
       return parseModel(argsText);
     case "/websearch":
       return parseWebSearch(argsText);
+    case "/info":
+      return parseInfo(argsText);
     case "/movedate":
       return parseMoveDate(argsText);
     case "/undo":
@@ -164,6 +179,11 @@ function parseWebSearch(argsText: string): WebSearchCommand {
     throw new CommandError("/websearch requires a query (positional or query=\"...\").");
   }
   return { type: "websearch", query: query.trim() };
+}
+
+function parseInfo(argsText: string): InfoCommand {
+  const { value: topic } = consumeLeadingBareValue(argsText);
+  return { type: "info", topic: topic?.trim() || undefined };
 }
 
 function parseEdit(argsText: string): EditCommand {
@@ -303,4 +323,81 @@ export function extractSlashCommandLines(text: string): string[] {
     .map((line) => line.trimStart())
     .filter((line) => line.startsWith("/"))
     .filter((line) => line.length > 0);
+}
+
+export type CanonicalCommandContext = {
+  deletedActivity?: Record<string, unknown> | null;
+  generatedUid?: string;
+};
+
+export function formatCanonicalCommand(command: ParsedCommand, context?: CanonicalCommandContext): string {
+  switch (command.type) {
+    case "newtrip":
+      return parts("/newtrip", formatArg("tripId", command.tripId));
+    case "add": {
+      const fieldArgs = Object.entries(command.fields).map(([key, value]) => formatArg(key, value));
+      return parts(
+        "/add",
+        formatArg("activityType", command.activityType),
+        ...fieldArgs,
+        formatArg("uid", command.uid ?? context?.generatedUid)
+      );
+    }
+    case "edit": {
+      const changeArgs = Object.entries(command.changes).map(([key, value]) => formatArg(key, value));
+      return parts("/edit", formatArg("uid", command.uid), ...changeArgs);
+    }
+    case "delete": {
+      // Include a snapshot of the soon-to-be-removed activity so clients can still render
+      // rich delete command chips even after the activity disappears from the trip model.
+      const deletedArgs = context?.deletedActivity
+        ? Object.keys(context.deletedActivity)
+            .sort((a, b) => a.localeCompare(b))
+            .map((key) => formatArg(key, context.deletedActivity?.[key]))
+            .filter((segment): segment is string => Boolean(segment))
+        : [];
+      return parts("/delete", formatArg("uid", command.uid), ...deletedArgs);
+    }
+    case "help":
+      return "/help";
+    case "renormalize":
+      return "/renormalize";
+    case "trip":
+      return command.target ? parts("/trip", formatArg("target", command.target)) : "/trip";
+    case "model":
+      return command.target ? parts("/model", formatArg("target", command.target)) : "/model";
+    case "websearch":
+      return parts("/websearch", formatArg("query", command.query));
+    case "info":
+      return command.topic ? parts("/info", formatArg("topic", command.topic)) : "/info";
+    case "movedate":
+      return parts("/movedate", formatArg("from", command.from), formatArg("to", command.to));
+    case "undo":
+      return parts("/undo", formatArg("count", command.count));
+    case "redo":
+      return parts("/redo", formatArg("count", command.count));
+    default:
+      return "/help";
+  }
+}
+
+function parts(...segments: Array<string | null | undefined>): string {
+  return segments.filter((segment): segment is string => Boolean(segment && segment.length > 0)).join(" ").trim();
+}
+
+function formatArg(key: string, value: unknown): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  return `${key}=${formatValue(value)}`;
+}
+
+function formatValue(value: unknown): string {
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return "\"\"";
+  }
+  return JSON.stringify(String(value));
 }

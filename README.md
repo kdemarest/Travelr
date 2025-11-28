@@ -77,6 +77,7 @@ Travelr is a personal trip planner with a Node.js + TypeScript API (`server/`) a
 - `/undo [count]` – Step backward through the journal timeline without deleting entries. `count` defaults to 1.
 - `/redo [count]` – Reapply commands that were previously undone, provided no new commands were recorded after the undo.
 - `/trip [tripId]` and `/help` – List trips or show help text.
+- `/renormalize` – Maintenance-only command that rewrites every `.travlrjournal` into canonical form, producing `.tmp` files for review. Trigger this manually; AI chat responses must not invoke it.
 
 ## Next Steps
 

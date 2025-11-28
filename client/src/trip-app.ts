@@ -6,17 +6,17 @@ import type { CommandProcessingResult } from "./commandUx";
 import { buildPlanLines, describeActivity } from "./view/view-plan";
 import type { DayEntry } from "./view/view-day";
 import { buildDayItems } from "./view/view-day";
+import { panelFocus } from "./focus";
 import { normalizeUserDate } from "./ux-date";
 import type { PanelDetailLogEntry } from "./components/panel-detail";
 import {
-  persistLastTripId,
-  readLastTripId,
-  persistSelectedDate,
-  readSelectedDate,
-  clearSelectedDate,
-  persistSelectedActivityUid,
-  readSelectedActivityUid,
-  clearSelectedActivityUid
+  saveLastTripId,
+  loadLastTripId,
+  saveFocusedDate,
+  loadFocusedDate,
+  saveFocusedActivityUid,
+  loadFocusedActivityUid,
+  clearFocusedActivityUid
 } from "./storage";
 import "./components/panel-plan";
 import "./components/panel-day";
@@ -24,6 +24,7 @@ import "./components/panel-activity";
 import "./components/panel-detail";
 
 const AUTO_CHAT_MAX_FOLLOWUPS = 5;
+const DEFAULT_ACTIVITY_TO_CREATE = "visit";
 
 @customElement("trip-app")
 export class TripApp extends LitElement {
@@ -33,19 +34,19 @@ export class TripApp extends LitElement {
   @state() private planTitle = "Untitled Trip";
   @state() private planLines: PlanLine[] = [];
   @state() private currentTripId = "demo";
-  @state() private selectedUid: string | null = null;
-  @state() private selectedActivity: Activity | null = null;
-  @state() private selectedDateKey: string | null = null;
+  @state() __focusedUid: string | null = null;
+  @state() __focusedDate: string | null = null;
+  @state() __hoveredActivity: Activity | null = null;
   @state() private dayTitle = "Day";
   @state() private dayItems: DayEntry[] = [];
-  @state() private hoveredActivity: Activity | null = null;
-  @state() private dayDragPlanState: { uid: string; dateKey: string | null } | null = null;
+  @state() private dayDragPlanState: { uid: string; date: string | null } | null = null;
   private attemptedAutoRestore = false;
   private pendingNewActivityPrevUids: Set<string> | null = null;
   private conversationLines: string[] = [];
   private logEntryCounter = 0;
   private pendingEditedUid: string | null = null;
-
+  private conversationHistoryRequestId = 0;
+  
   static styles = css`
     :host {
       display: block;
@@ -76,8 +77,8 @@ export class TripApp extends LitElement {
     }
 
     .panel-left {
-      width: 300px;
-      flex: 0 0 300px;
+      width: 420px;
+      flex: 0 0 420px;
     }
 
     .panel-middle {
@@ -120,9 +121,9 @@ export class TripApp extends LitElement {
           <panel-plan
             .title=${this.planTitle}
             .lines=${this.planLines}
-            .selectedKey=${this.selectedDateKey}
+            .focusedKey=${this.__focusedDate}
             .incomingActivityDrag=${this.dayDragPlanState}
-            @plan-date-selected=${this.handlePlanDateSelected}
+            @plan-date-focused=${this.handlePlanDateFocused}
             @plan-date-move=${this.handlePlanDateMove}
           ></panel-plan>
         </section>
@@ -131,9 +132,9 @@ export class TripApp extends LitElement {
             <panel-day
               .title=${this.dayTitle}
               .items=${this.dayItems}
-              .selectedUid=${this.selectedUid}
+              .focusedUid=${this.__focusedUid}
               @day-activity-hover=${this.handleDayActivityHover}
-              @day-activity-select=${this.handleDayActivitySelect}
+              @day-activity-focus=${this.handleDayActivityFocus}
               @day-activity-drag-state=${this.handleDayActivityDragState}
               @day-activity-move=${this.handleDayActivityMove}
               @day-activity-move-date=${this.handleDayActivityMoveDate}
@@ -141,9 +142,10 @@ export class TripApp extends LitElement {
           </div>
           <div class="panel panel-middle-bottom">
             <panel-activity
-              .activity=${this.hoveredActivity}
+              .activity=${this.__hoveredActivity}
               .canCreate=${Boolean(this.tripModel)}
               @panel-activity-create=${this.handleActivityCreate}
+              @panel-date-link-click=${this.handlePanelDateLink}
             ></panel-activity>
           </div>
         </section>
@@ -151,11 +153,20 @@ export class TripApp extends LitElement {
           <panel-detail
             .messages=${this.messages}
             .serverBusy=${this.sending}
+            .activities=${this.tripModel?.activities ?? []}
             @panel-detail-submit=${this.handlePanelSubmit}
+            @panel-detail-link=${this.handlePanelDetailSelect}
+            @panel-date-link-click=${this.handlePanelDateLink}
+            @panel-command-activity-select=${this.handlePanelCommandActivitySelect}
           ></panel-detail>
         </section>
       </div>
     `;
+  }
+
+  __getTripId(): string
+  {
+	return this.currentTripId;
   }
 
   private appendMessage(message: string, options?: { isUser?: boolean; conversationText?: string }) {
@@ -202,54 +213,64 @@ export class TripApp extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+  let lookupActivityByUidFn = (uid:string | null) => this.tripModel?.activities.find((activity) => activity.uid === uid) ?? null;
+  let onFocusedDateChangeFn = () => this.onFocusedDateChange(this.planLines);
+	panelFocus.attachHost(
+      this,
+      lookupActivityByUidFn,
+    onFocusedDateChangeFn  
+    );
     this.tryAutoRestoreTrip();
+    void this.loadConversationHistory(this.currentTripId);
     void this.announceChatConnection();
   }
 
+  disconnectedCallback() {
+    panelFocus.detachHost(this);
+    super.disconnectedCallback();
+  }
   private rememberTripModel(model: TripModel) {
     this.tripModel = model;
     const newTripId = model.tripId?.trim() || model.tripName?.trim();
     if (newTripId) {
       const switchingTrip = newTripId !== this.currentTripId;
       this.currentTripId = newTripId;
-      persistLastTripId(newTripId);
+      saveLastTripId(newTripId);
       if (switchingTrip) {
-        this.selectedDateKey = null;
-        this.hoveredActivity = null;
-        this.selectedActivity = null;
-        const storedUid = readSelectedActivityUid(newTripId);
-        this.applySelectedUid(storedUid, { persist: false });
+		panelFocus.date = null;
+		panelFocus.hoveredActivity = null;
+        const storedUid = loadFocusedActivityUid(newTripId);
+        panelFocus.activityUid = storedUid;
+        this.resetConversationLog();
+        void this.loadConversationHistory(newTripId);
       }
     }
     this.updatePanels(model);
 
     if (this.pendingEditedUid) {
-      const targetActivity = model.activities.find((activity) => activity.uid === this.pendingEditedUid);
-      if (targetActivity) {
-        this.setSelectedActivity(targetActivity);
-        const canonicalDate = canonicalizeDateKey(targetActivity.date ?? null);
-        if (canonicalDate) {
-          this.selectedDateKey = canonicalDate;
-          persistSelectedDate(this.currentTripId, canonicalDate);
-          this.syncDaySelection(this.planLines);
-        }
-      }
+	  panelFocus.activityUid = this.pendingEditedUid;
       this.pendingEditedUid = null;
     }
 
     if (this.pendingNewActivityPrevUids) {
       const previous = this.pendingNewActivityPrevUids;
       this.pendingNewActivityPrevUids = null;
-      const newActivity = model.activities.find(
-        (activity) => activity.uid && !previous.has(activity.uid)
-      );
-      if (newActivity) {
-        if (newActivity.date) {
-          this.selectedDateKey = newActivity.date;
-          persistSelectedDate(this.currentTripId, newActivity.date);
-          this.syncDaySelection(this.planLines);
+
+      // Detect any UID that did not exist before the /add block was sent. When multiple
+      // activities are created in one shot, prefer the last one so focus follows the
+      // most recent addition the chatbot made.
+      let newestActivity: Activity | null = null;
+      for (const activity of model.activities) {
+        if (activity.uid && !previous.has(activity.uid)) {
+          newestActivity = activity;
         }
-        this.setSelectedActivity(newActivity);
+      }
+
+      if (newestActivity) {
+        if (newestActivity.date) {
+          panelFocus.date = newestActivity.date;
+        }
+        panelFocus.activityUid = newestActivity.uid;
       }
     }
   }
@@ -258,38 +279,10 @@ export class TripApp extends LitElement {
     this.planTitle = this.derivePlanTitle(model);
     const lines = buildPlanLines(model.activities);
     this.planLines = lines;
-    this.syncSelectionWithModel(model.activities);
-    if (!this.selectedDateKey) {
-      const storedDateKey = readSelectedDate(this.currentTripId);
-      if (storedDateKey) {
-        const canonical = canonicalizeDateKey(storedDateKey);
-        if (canonical) {
-          this.selectedDateKey = canonical;
-          if (canonical !== storedDateKey) {
-            persistSelectedDate(this.currentTripId, canonical);
-          }
-        } else {
-          this.selectedDateKey = storedDateKey;
-        }
-      }
-    }
-    this.syncDaySelection(lines);
-  }
+    this.onFocusedDateChange(lines);
 
-  private syncSelectionWithModel(activities: Activity[]) {
-    if (!this.selectedUid) {
-      return;
-    }
-    const match = activities.find((activity) => activity.uid === this.selectedUid);
-    if (!match) {
-      this.setSelectedActivity(null);
-      return;
-    }
-    this.setSelectedActivity(match);
-    const canonicalDate = canonicalizeDateKey(match.date ?? null);
-    if (canonicalDate && canonicalDate !== this.selectedDateKey) {
-      this.selectedDateKey = canonicalDate;
-      persistSelectedDate(this.currentTripId, canonicalDate);
+    if (!panelFocus.date) {
+      panelFocus.date = loadFocusedDate(this.currentTripId);
     }
   }
 
@@ -300,12 +293,26 @@ export class TripApp extends LitElement {
     return model.tripId?.trim() || model.tripName?.trim() || "Untitled Trip";
   }
 
-  private handlePlanDateSelected(event: CustomEvent<{ line: PlanLine }>) {
-    const line = event.detail.line;
+  private handlePlanDateFocused(event: CustomEvent<{ line: PlanLine }>) {
+    const line = event.detail?.line;
     if (!line || line.kind !== "dated") {
       return;
     }
-    this.applyDaySelection(line);
+    panelFocus.date = line.date;
+
+    const matchesExistingFocus = panelFocus.activityUid
+      ? line.activities.some((activity) => activity.uid === panelFocus.activityUid)
+      : false;
+
+    if (matchesExistingFocus) {
+      return;
+    }
+
+    const fallbackUid = line.primaryActivityUid ?? line.activities[0]?.uid ?? null;
+    panelFocus.activityUid = fallbackUid;
+    panelFocus.hoveredActivity = fallbackUid
+      ? line.activities.find((activity) => activity.uid === fallbackUid) ?? null
+      : null;
   }
 
   private handlePlanDateMove(event: CustomEvent<{ fromKey: string; toKey: string }>) {
@@ -314,65 +321,35 @@ export class TripApp extends LitElement {
       return;
     }
     const targetLine = this.planLines.find(
-      (line): line is Extract<PlanLine, { kind: "dated" }> => line.kind === "dated" && line.dateKey === toKey
+      (line): line is Extract<PlanLine, { kind: "dated" }> => line.kind === "dated" && line.date === toKey
     );
     if (targetLine) {
-      this.applyDaySelection(targetLine);
+      panelFocus.date = targetLine.date;
     } else {
-      this.selectedDateKey = toKey;
-      persistSelectedDate(this.currentTripId, toKey);
+      panelFocus.date = toKey;
     }
     void this.submitCommand(`/movedate from="${fromKey}" to="${toKey}"`, { skipChat: true });
   }
 
-  private syncDaySelection(lines: PlanLine[]) {
-    if (!this.selectedDateKey) {
-      this.clearDaySelection();
-      return;
-    }
-
-    const existing = lines.find(
+  private onFocusedDateChange(lines: PlanLine[]) {
+    const existing = !panelFocus.date ? null : lines.find(
       (line): line is Extract<PlanLine, { kind: "dated" }> =>
-        line.kind === "dated" && line.dateKey === this.selectedDateKey
+        line.kind === "dated" && line.date === panelFocus.date
     );
 
-    if (existing) {
-      this.applyDaySelection(existing);
-    } else {
-      this.clearDaySelection();
-    }
-  }
-
-  private applyDaySelection(line: Extract<PlanLine, { kind: "dated" }>) {
-    this.hoveredActivity = null;
-    this.selectedDateKey = line.dateKey;
-    this.dayTitle = line.fullDisplayDate;
-    this.dayItems = buildDayItems(line.activities, describeActivity);
-    persistSelectedDate(this.currentTripId, line.dateKey);
-    this.ensureActivitySelection(line.activities);
-  }
-
-  private clearDaySelection() {
-    this.selectedDateKey = null;
-    this.dayTitle = "Day";
-    this.dayItems = [];
-    this.setSelectedActivity(null);
-    clearSelectedDate(this.currentTripId);
-  }
-
-  public setSelectedUid(uid: string | null) {
-    this.applySelectedUid(uid);
+    this.dayTitle = existing ? existing.fullDisplayDate : "Day";
+    this.dayItems = existing ? buildDayItems(existing.activities, describeActivity) : [];
   }
 
   private handleDayActivityHover(event: CustomEvent<{ activity: Activity | null }>) {
-    this.hoveredActivity = event.detail.activity ?? null;
+    panelFocus.hoveredActivity = event.detail.activity ?? null;
   }
 
-  private handleDayActivitySelect(event: CustomEvent<{ activity: Activity }>) {
-    this.setSelectedActivity(event.detail.activity);
+  private handleDayActivityFocus(event: CustomEvent<{ activity: Activity }>) {
+    panelFocus.activityUid = event.detail.activity.uid;
   }
 
-  private handleDayActivityDragState(event: CustomEvent<{ active: boolean; uid?: string; dateKey?: string | null }>) {
+  private handleDayActivityDragState(event: CustomEvent<{ active: boolean; uid?: string; date?: string | null }>) {
     if (!event.detail?.active) {
       this.dayDragPlanState = null;
       return;
@@ -382,7 +359,7 @@ export class TripApp extends LitElement {
       this.dayDragPlanState = null;
       return;
     }
-    this.dayDragPlanState = { uid, dateKey: event.detail.dateKey ?? null };
+    this.dayDragPlanState = { uid, date: event.detail.date ?? null };
   }
 
   private handleDayActivityMove(event: CustomEvent<{ uid: string; time: string }>) {
@@ -391,82 +368,35 @@ export class TripApp extends LitElement {
       if (!uid || !time) {
       return;
     }
-    this.applySelectedUid(uid);
+    panelFocus.activityUid = uid;
     void this.submitCommand(`/edit ${uid} time="${time}"`, { skipChat: true });
   }
 
-  private handleDayActivityMoveDate(event: CustomEvent<{ uid: string; dateKey: string }>) {
+  private handleDayActivityMoveDate(event: CustomEvent<{ uid: string; date: string }>) {
     const uid = event.detail.uid?.trim();
-    const dateKey = event.detail.dateKey?.trim();
-    if (!uid || !dateKey) {
+    const date = event.detail.date?.trim();
+    if (!uid || !date) {
       return;
     }
     this.dayDragPlanState = null;
     const targetLine = this.planLines.find(
-      (line): line is Extract<PlanLine, { kind: "dated" }> => line.kind === "dated" && line.dateKey === dateKey
+      (line): line is Extract<PlanLine, { kind: "dated" }> => line.kind === "dated" && line.date === date
     );
-    if (targetLine) {
-      this.applyDaySelection(targetLine);
-    } else {
-      this.selectedDateKey = dateKey;
-      persistSelectedDate(this.currentTripId, dateKey);
-    }
-    this.applySelectedUid(uid);
-    void this.submitCommand(`/edit ${uid} date="${dateKey}"`, { skipChat: true });
-  }
-
-  private setSelectedActivity(activity: Activity | null) {
-    if (activity) {
-      this.selectedActivity = activity;
-      this.applySelectedUid(activity.uid);
-      this.hoveredActivity = activity;
-    } else {
-      this.selectedActivity = null;
-      this.applySelectedUid(null);
-      this.hoveredActivity = null;
-    }
-  }
-
-  private applySelectedUid(uid: string | null, options?: { persist?: boolean }) {
-    this.selectedUid = uid;
-    if (options?.persist === false) {
-      return;
-    }
-    if (uid) {
-      persistSelectedActivityUid(this.currentTripId, uid);
-    } else {
-      clearSelectedActivityUid(this.currentTripId);
-    }
-  }
-
-  private ensureActivitySelection(activities: Activity[]) {
-    let targetUid = this.selectedUid;
-    if (!targetUid) {
-      targetUid = readSelectedActivityUid(this.currentTripId);
-    }
-
-    if (!targetUid) {
-      if (this.hoveredActivity && !activities.some((activity) => activity.uid === this.hoveredActivity?.uid)) {
-        this.hoveredActivity = null;
-      }
-      return;
-    }
-
-    const match = activities.find((activity) => activity.uid === targetUid);
-    if (match) {
-      this.setSelectedActivity(match);
-    } else {
-      this.setSelectedActivity(null);
-    }
+    panelFocus.date = targetLine ? targetLine.date : date;
+	panelFocus.activityUid = uid;
+    void this.submitCommand(`/edit ${uid} date="${date}"`, { skipChat: true });
   }
 
   private handleActivityCreate() {
     if (!this.tripModel) {
       return;
     }
-    const parts = ["/add visit", 'name="New Activity"'];
-    if (this.selectedDateKey) {
-      parts.push(`date="${this.selectedDateKey}"`);
+    const parts = [
+      `/add ${DEFAULT_ACTIVITY_TO_CREATE}`,
+      'name="New Activity"'
+    ];
+    if (panelFocus.date) {
+      parts.push(`date="${panelFocus.date}"`);
     }
     const derivedTime = this.deriveNextActivityTime();
     if (derivedTime) {
@@ -477,7 +407,7 @@ export class TripApp extends LitElement {
   }
 
   private deriveNextActivityTime(): string | null {
-    const time = this.selectedActivity?.time?.trim();
+    const time = panelFocus.activity?.time?.trim();
     if (!time) {
       return null;
     }
@@ -512,12 +442,15 @@ export class TripApp extends LitElement {
     }
 
     this.pendingEditedUid = this.extractLastEditedUid(text);
+    if (this.containsAddCommand(text)) {
+      this.pendingNewActivityPrevUids = this.captureCurrentActivityUids();
+    }
 
     const shouldShowSearchResults = options?.showSearchResults ?? true;
     const result = await processUserCommand({
       text,
       currentTripId: this.currentTripId,
-      selectedUid: this.selectedUid,
+      focusedUid: panelFocus.activityUid,
         appendMessage: (message, meta) => this.appendMessage(message, meta),
       setSending: (sending) => {
         this.sending = sending;
@@ -553,6 +486,11 @@ export class TripApp extends LitElement {
 
     await this.requestChatResponse(text);
     return result;
+  }
+
+  private containsAddCommand(text: string): boolean {
+    const commands = extractSlashCommandLines(text);
+    return commands.some((line) => line.trimStart().toLowerCase().startsWith("/add"));
   }
 
   private async announceChatConnection(): Promise<void> {
@@ -591,7 +529,8 @@ export class TripApp extends LitElement {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: userInput,
-          conversationHistory: this.buildConversationHistory()
+          conversationHistory: this.buildConversationHistory(),
+          focusSummary: panelFocus.describeFocus()
         })
       });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -640,14 +579,194 @@ export class TripApp extends LitElement {
       return;
     }
     this.attemptedAutoRestore = true;
-    const storedTripId = readLastTripId();
+    const storedTripId = loadLastTripId();
     if (!storedTripId) {
       return;
     }
     this.currentTripId = storedTripId;
-    const storedUid = readSelectedActivityUid(storedTripId);
-    this.applySelectedUid(storedUid, { persist: false });
+	panelFocus.activityUid = loadFocusedActivityUid(storedTripId);
     void this.submitCommand(`/trip ${storedTripId}`, { skipChat: true });
+  }
+
+  private handlePanelDetailSelect(event: CustomEvent<{ type: "activity" | "date"; value: string }>) {
+    const type = event.detail?.type;
+    const value = event.detail?.value?.trim();
+    if (!type || !value) {
+      return;
+    }
+
+    if (type === "activity") {
+      panelFocus.activityUid = value;
+      const activity = this.tripModel?.activities.find((entry) => entry.uid === value) ?? null;
+      if (activity?.date) {
+        panelFocus.date = activity.date;
+      }
+      panelFocus.hoveredActivity = activity;
+      return;
+    }
+
+    if (type === "date") {
+      panelFocus.date = normalizeUserDate(value) ?? value;
+    }
+  }
+
+  private handlePanelDateLink(event: CustomEvent<{ date: string }>) {
+    const rawDate = event.detail?.date?.trim();
+    if (!rawDate) {
+      return;
+    }
+    const normalized = normalizeUserDate(rawDate) ?? rawDate;
+    panelFocus.date = normalized;
+  }
+
+  private handlePanelCommandActivitySelect(event: CustomEvent<{ uid?: string }>) {
+    const uid = event.detail?.uid;
+    if (!uid) {
+      return;
+    }
+    panelFocus.activityUid = uid;
+    const activity = this.tripModel?.activities.find((entry) => entry.uid === uid) ?? null;
+    if (activity?.date) {
+      panelFocus.date = activity.date;
+    }
+    panelFocus.hoveredActivity = activity;
+  }
+  private async loadConversationHistory(tripId: string | null): Promise<void> {
+    const requestId = ++this.conversationHistoryRequestId;
+    if (!tripId) {
+      this.resetConversationLog();
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/trip/${encodeURIComponent(tripId)}/conversation`);
+      if (requestId !== this.conversationHistoryRequestId) {
+        return;
+      }
+      if (!response.ok) {
+        this.resetConversationLog();
+        return;
+      }
+      const payload = (await response.json().catch(() => ({}))) as { history?: string };
+      if (requestId !== this.conversationHistoryRequestId) {
+        return;
+      }
+      const historyText = typeof payload.history === "string" ? payload.history : "";
+      this.applyConversationHistory(historyText);
+    } catch (error) {
+      if (requestId !== this.conversationHistoryRequestId) {
+        return;
+      }
+      console.error("Failed to load conversation history", error);
+      this.resetConversationLog();
+    }
+  }
+
+  private applyConversationHistory(history: string) {
+    const normalized = history.replace(/\r\n/g, "\n").trim();
+    if (!normalized) {
+      this.resetConversationLog();
+      return;
+    }
+    this.conversationLines = [normalized];
+    const restored = this.parseConversationHistoryForDisplay(normalized);
+    this.logEntryCounter = restored.length;
+    this.messages = restored;
+  }
+
+  private parseConversationHistoryForDisplay(history: string): PanelDetailLogEntry[] {
+    const lines = history.split("\n");
+    const entries: Array<{ text: string; isUser: boolean }> = [];
+    let current: { text: string; isUser: boolean } | null = null;
+    let skippingHidden = false;
+
+    const commit = () => {
+      if (current) {
+        entries.push(current);
+        current = null;
+      }
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, "");
+      if (!line.length) {
+        if (current && !skippingHidden) {
+          current.text += "\n";
+        }
+        continue;
+      }
+
+      const trimmed = line.trimStart();
+      const isBoundary = this.looksLikeHistoryBoundary(trimmed);
+
+      if (skippingHidden) {
+        if (isBoundary) {
+          skippingHidden = false;
+        } else {
+          continue;
+        }
+      }
+
+      if (this.isHiddenHistoryBoundary(trimmed)) {
+        skippingHidden = true;
+        commit();
+        continue;
+      }
+
+      if (isBoundary) {
+        commit();
+        current = this.buildHistoryEntryFromLine(line);
+        continue;
+      }
+
+      if (!current) {
+        current = this.buildHistoryEntryFromLine(line);
+        continue;
+      }
+
+      current.text += `\n${line}`;
+    }
+
+    if (current && !skippingHidden) {
+      entries.push(current);
+    }
+
+    return entries.map((entry, index) => ({
+      id: `log-${index + 1}`,
+      kind: "text",
+      text: entry.text,
+      isUser: entry.isUser
+    }));
+  }
+
+  private looksLikeHistoryBoundary(line: string): boolean {
+    return /^User:/i.test(line)
+      || /^GPT\b/i.test(line)
+      || /^ChatGPT\b/i.test(line)
+      || /^[✓✗ℹ]/.test(line)
+      || /^Network error:/i.test(line)
+      || /^GPT error:/i.test(line)
+      || /^ChatGPT connection/i.test(line)
+      || /^Search \"/i.test(line)
+      || /^Web search /i.test(line);
+  }
+
+  private isHiddenHistoryBoundary(line: string): boolean {
+    return /^Web search /i.test(line);
+  }
+
+  private buildHistoryEntryFromLine(line: string): { text: string; isUser: boolean } {
+    const normalized = line.trimStart();
+    if (/^User:/i.test(normalized)) {
+      return { text: normalized.replace(/^User:\s*/i, ""), isUser: true };
+    }
+    return { text: line, isUser: false };
+  }
+
+  private resetConversationLog() {
+    this.messages = [];
+    this.conversationLines = [];
+    this.logEntryCounter = 0;
   }
 
   private extractLastEditedUid(text: string): string | null {
@@ -713,12 +832,6 @@ function minutesToTime(minutes: number): string {
   return `${hrs}:${mins}`;
 }
 
-function canonicalizeDateKey(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-  return normalizeUserDate(value) ?? value;
-}
 
 declare global {
   interface HTMLElementTagNameMap {
