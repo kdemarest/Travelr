@@ -10,7 +10,7 @@ const GOOGLE_CX_SECRET = "GOOGLE_CS_CX";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDir = path.resolve(__dirname, "../../data");
+const dataDir = path.resolve(__dirname, "../../trips");
 const lastSearchHtmlPath = path.join(dataDir, "last_search_result.html");
 
 type CustomSearchItem = {

@@ -3,6 +3,10 @@ import { customElement, property, state } from "lit/decorators.js";
 import type { PlanLine } from "../types";
 import { buildNotation } from "../view/view-plan";
 import { parseFlexibleDate } from "../datetime";
+import { 
+  renderDayIndicatorSlots, 
+  indicatorSlotStyles 
+} from "./indicators";
 
 @customElement("panel-plan")
 export class PanelPlan extends LitElement {
@@ -23,7 +27,7 @@ export class PanelPlan extends LitElement {
   } | null = null;
 
 
-  static styles = css`
+  static baseStyles = css`
     :host {
       display: flex;
       flex-direction: column;
@@ -84,16 +88,26 @@ export class PanelPlan extends LitElement {
       align-items: baseline;
       padding: 1px 0.5rem;
       border-radius: 6px;
+      border: 1px solid transparent;
       cursor: pointer;
       transition: background 0.15s ease;
       position: relative;
+      overflow: visible;
+    }
+
+    .date-line .indicator-slots {
+      overflow: visible;
+    }
+
+    .date-line .indicator-slot {
+      overflow: visible;
     }
 
     .date-line:hover {
       background: #e0e7ff;
     }
 
-    .drag-hint {
+    .line-controls {
       position: absolute;
       left: 0.35rem;
       top: 50%;
@@ -101,9 +115,17 @@ export class PanelPlan extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
+      pointer-events: none;
+    }
+
+    .drag-hint {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       opacity: 0;
       transition: opacity 0.15s ease;
       pointer-events: auto;
+      background: transparent;
     }
 
     .date-line.hovered .drag-hint {
@@ -117,6 +139,33 @@ export class PanelPlan extends LitElement {
     .date-line.incoming-activity-drop {
       border: 1px dashed #fb923c;
       background: #fff7ed;
+    }
+
+    .date-line.date-marked {
+      background: #e8f8e5;
+      border-color: #bbf7d0;
+    }
+
+    .date-line.date-marked .date,
+    .date-line.date-marked .notation {
+      color: #14532d;
+    }
+
+    .mark-badge {
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: #86efac;
+      color: #0f172a;
+      font-size: 0.7rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      pointer-events: auto;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.2);
     }
 
     .date {
@@ -134,6 +183,8 @@ export class PanelPlan extends LitElement {
       flex: 1;
       position: relative;
       display: block;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .notation {
@@ -141,6 +192,7 @@ export class PanelPlan extends LitElement {
       pointer-events: auto;
       cursor: grab;
       touch-action: none;
+      overflow: hidden;
       text-overflow: ellipsis;
       text-align: left;
       font-family: "Segoe UI", Arial, sans-serif;
@@ -178,6 +230,8 @@ export class PanelPlan extends LitElement {
     }
   `;
 
+  static styles = [PanelPlan.baseStyles, indicatorSlotStyles];
+
   render() {
     const displayTitle = this.title?.trim() || "Untitled Trip";
     const dateRange = this.getDateRangeLabel();
@@ -201,8 +255,34 @@ export class PanelPlan extends LitElement {
     `;
   }
 
-  private handleDateClick(line: PlanLine) {
+  private handleDateClick(event: MouseEvent, line: PlanLine) {
     if (line.kind !== "dated") {
+      return;
+    }
+
+      if (event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.dispatchEvent(
+          new CustomEvent("plan-date-range-mark", {
+            detail: { date: line.date },
+            bubbles: true,
+            composed: true
+          })
+        );
+        return;
+      }
+
+      if (event.ctrlKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.dispatchEvent(
+        new CustomEvent("plan-date-toggle-mark", {
+          detail: { date: line.date, mark: !line.isDateMarked },
+          bubbles: true,
+          composed: true
+        })
+      );
       return;
     }
 
@@ -298,6 +378,9 @@ export class PanelPlan extends LitElement {
     if (this.incomingActivityDrag?.dateKey === line.date) {
       classes.push("incoming-activity-drop");
     }
+    if (line.isDateMarked) {
+      classes.push("date-marked");
+    }
     return classes.join(" ");
   }
 
@@ -356,27 +439,69 @@ export class PanelPlan extends LitElement {
     return html`<div
       class=${this.buildDateLineClasses(line)}
       data-key=${line.date}
-      @click=${() => this.handleDateClick(line)}
+      @click=${(event: MouseEvent) => this.handleDateClick(event, line)}
       @mouseenter=${() => this.setHoveredKey(line.date)}
       @mouseleave=${() => this.setHoveredKey(null)}
     >
-      <span
-        class="drag-hint"
-        role="button"
-        aria-label="Drag day"
-        @pointerdown=${(event: PointerEvent) => this.handleDragHandlePointerDown(event, line)}
-      >
-        ${this.renderGripIcon()}
-      </span>
+      <span class="line-controls">${this.renderLineControl(line)}</span>
       <span class="date">${line.displayDate}</span>
       <div class="notation-area">
         <span class="notation" title=${hoverDisplay}>${hoverDisplay}</span>
       </div>
+      ${this.renderIndicatorSlots(line)}
+    </div>`;
+  }
+
+  private renderIndicatorSlots(line: Extract<PlanLine, { kind: "dated" }>) {
+    return html`<div class="indicator-slots">
+      ${renderDayIndicatorSlots({
+        flightCount: line.flightCount ?? 0,
+        flightBooked: line.flightBooked ?? false,
+        hasRentalCar: line.hasRentalCar ?? false,
+        rentalCarBooked: line.rentalCarBooked ?? false,
+        lodgingStatus: line.lodgingStatus ?? "none",
+        lodgingCity: line.lodgingCity,
+        lodgingStartsHere: line.lodgingStartsHere ?? false,
+        lodgingEndsHere: line.lodgingEndsHere ?? false,
+        mealCount: line.mealCount ?? 0,
+        mealsNeedingReservation: line.mealsNeedingReservation ?? 0,
+        hasDateMismatchIssue: line.hasDateMismatchIssue ?? false,
+        issueNoTransportToLodging: line.issueNoTransportToLodging ?? false,
+        issueNoTransportToFlight: line.issueNoTransportToFlight ?? false,
+      })}
     </div>`;
   }
 
   private formatActivityCount(count: number): string {
     return count === 1 ? "1 activity" : `${count} activities`;
+  }
+
+  private renderLineControl(line: Extract<PlanLine, { kind: "dated" }>) {
+    const count = line.markedCount ?? 0;
+    if (count > 0) {
+      const title = this.formatMarkedActivityCount(count);
+      return html`<span
+        class="mark-badge"
+        role="button"
+        aria-label=${title}
+        title=${title}
+        @pointerdown=${(event: PointerEvent) => this.handleDragHandlePointerDown(event, line)}
+      >
+        ${count}
+      </span>`;
+    }
+    return html`<span
+      class="drag-hint"
+      role="button"
+      aria-label="Drag day"
+      @pointerdown=${(event: PointerEvent) => this.handleDragHandlePointerDown(event, line)}
+    >
+      ${this.renderGripIcon()}
+    </span>`;
+  }
+
+  private formatMarkedActivityCount(count: number): string {
+    return count === 1 ? "1 marked activity" : `${count} marked activities`;
   }
 
 

@@ -174,10 +174,11 @@ class PanelFocus {
     }
   }
 
-  describeFocus(): string {
-    const dateText = this.date ?? "none";
-    const activityUidText = this.activityUid ?? "none";
-    return `date is ${dateText}. activity uid is ${activityUidText}.`;
+  describeFocus(): { focusedDate: string | null; focusedActivityUid: string | null } {
+    return {
+      focusedDate: this.date,
+      focusedActivityUid: this.activityUid
+    };
   }
 }
 

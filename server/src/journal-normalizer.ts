@@ -8,6 +8,7 @@ import {
 } from "./command.js";
 import { applyTripCommand } from "./reducer.js";
 import type { TripModel } from "./types.js";
+import { ensureDefaultCountry } from "./country-defaults.js";
 
 export const JOURNAL_EXTENSION = ".travlrjournal";
 
@@ -70,7 +71,7 @@ export async function normalizeJournalFile(filePath: string): Promise<JournalNor
   const normalized: string[] = [];
   const history: ParsedCommand[] = [];
   let head = 0;
-  let model: TripModel = { tripName, tripId: tripName, activities: [] };
+  let model: TripModel = ensureDefaultCountry({ tripName, tripId: tripName, activities: [], countries: [] });
   let modelDirty = true;
   let normalizedLines = 0;
   let skippedLines = 0;
@@ -80,11 +81,11 @@ export async function normalizeJournalFile(filePath: string): Promise<JournalNor
     if (!modelDirty) {
       return model;
     }
-    let current: TripModel = { tripName, tripId: tripName, activities: [] };
+    let current: TripModel = ensureDefaultCountry({ tripName, tripId: tripName, activities: [], countries: [] });
     for (let index = 0; index < head; index += 1) {
       current = applyTripCommand(current, history[index]);
     }
-    model = current;
+    model = ensureDefaultCountry(current);
     modelDirty = false;
     return model;
   };

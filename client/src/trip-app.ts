@@ -7,6 +7,8 @@ import { buildPlanLines, describeActivity } from "./view/view-plan";
 import type { DayEntry } from "./view/view-day";
 import { buildDayItems } from "./view/view-day";
 import { panelFocus } from "./focus";
+import { panelMarks, panelDateMarks } from "./panelMarks";
+import { planDayRegistry } from "./planDayRegistry";
 import { normalizeUserDate } from "./ux-date";
 import type { PanelDetailLogEntry } from "./components/panel-detail";
 import {
@@ -23,7 +25,6 @@ import "./components/panel-day";
 import "./components/panel-activity";
 import "./components/panel-detail";
 
-const AUTO_CHAT_MAX_FOLLOWUPS = 5;
 const DEFAULT_ACTIVITY_TO_CREATE = "visit";
 
 @customElement("trip-app")
@@ -39,13 +40,31 @@ export class TripApp extends LitElement {
   @state() __hoveredActivity: Activity | null = null;
   @state() private dayTitle = "Day";
   @state() private dayItems: DayEntry[] = [];
+  @state() private dayFlightCount = 0;
+  @state() private dayFlightBooked = false;
+  @state() private dayHasRentalCar = false;
+  @state() private dayRentalCarBooked = false;
+  @state() private dayLodgingStatus: "none" | "unbooked" | "booked" | "multiple" = "none";
+  @state() private dayLodgingCity?: string;
+  @state() private dayMealCount = 0;
+  @state() private dayMealsNeedingReservation = 0;
+  @state() private dayHasDateMismatchIssue = false;
+  @state() private dayIssueNoTransportToLodging = false;
+  @state() private dayIssueNoTransportToFlight = false;
+  @state() private dayMismatchedUids: Set<string> = new Set();
   @state() private dayDragPlanState: { uid: string; date: string | null } | null = null;
+  @state() private markedActivityIds: string[] = [];
+  @state() private markedDateKeys: string[] = [];
   private attemptedAutoRestore = false;
   private pendingNewActivityPrevUids: Set<string> | null = null;
-  private conversationLines: string[] = [];
   private logEntryCounter = 0;
   private pendingEditedUid: string | null = null;
   private conversationHistoryRequestId = 0;
+  private markedActivitySet: Set<string> = new Set();
+  private markedDateSet: Set<string> = new Set();
+  private activityMarksUnsubscribe: (() => void) | null = null;
+  private dateMarksUnsubscribe: (() => void) | null = null;
+  private chatbotStopRequested = false;
   
   static styles = css`
     :host {
@@ -125,6 +144,8 @@ export class TripApp extends LitElement {
             .incomingActivityDrag=${this.dayDragPlanState}
             @plan-date-focused=${this.handlePlanDateFocused}
             @plan-date-move=${this.handlePlanDateMove}
+            @plan-date-toggle-mark=${this.handlePlanDateToggleMark}
+            @plan-date-range-mark=${this.handlePlanDateRangeMark}
           ></panel-plan>
         </section>
         <section class="panel panel-middle">
@@ -133,17 +154,33 @@ export class TripApp extends LitElement {
               .title=${this.dayTitle}
               .items=${this.dayItems}
               .focusedUid=${this.__focusedUid}
+              .flightCount=${this.dayFlightCount}
+              .flightBooked=${this.dayFlightBooked}
+              .hasRentalCar=${this.dayHasRentalCar}
+              .rentalCarBooked=${this.dayRentalCarBooked}
+              .lodgingStatus=${this.dayLodgingStatus}
+              .lodgingCity=${this.dayLodgingCity}
+              .mealCount=${this.dayMealCount}
+              .mealsNeedingReservation=${this.dayMealsNeedingReservation}
+              .hasDateMismatchIssue=${this.dayHasDateMismatchIssue}
+              .issueNoTransportToLodging=${this.dayIssueNoTransportToLodging}
+              .issueNoTransportToFlight=${this.dayIssueNoTransportToFlight}
+              .mismatchedUids=${this.dayMismatchedUids}
               @day-activity-hover=${this.handleDayActivityHover}
               @day-activity-focus=${this.handleDayActivityFocus}
               @day-activity-drag-state=${this.handleDayActivityDragState}
               @day-activity-move=${this.handleDayActivityMove}
               @day-activity-move-date=${this.handleDayActivityMoveDate}
+              @day-activity-toggle-mark=${this.handleDayActivityToggleMark}
+              @day-activity-range-mark=${this.handleDayActivityRangeMark}
             ></panel-day>
           </div>
           <div class="panel panel-middle-bottom">
             <panel-activity
               .activity=${this.__hoveredActivity}
               .canCreate=${Boolean(this.tripModel)}
+              .countries=${this.tripModel?.countries ?? []}
+              .marked=${this.markedActivityIds.length > 0 && this.markedActivitySet.has(this.__hoveredActivity?.uid ?? "")}
               @panel-activity-create=${this.handleActivityCreate}
               @panel-date-link-click=${this.handlePanelDateLink}
             ></panel-activity>
@@ -155,6 +192,7 @@ export class TripApp extends LitElement {
             .serverBusy=${this.sending}
             .activities=${this.tripModel?.activities ?? []}
             @panel-detail-submit=${this.handlePanelSubmit}
+            @panel-detail-stop=${this.handlePanelStop}
             @panel-detail-link=${this.handlePanelDetailSelect}
             @panel-date-link-click=${this.handlePanelDateLink}
             @panel-command-activity-select=${this.handlePanelCommandActivitySelect}
@@ -169,29 +207,25 @@ export class TripApp extends LitElement {
 	return this.currentTripId;
   }
 
-  private appendMessage(message: string, options?: { isUser?: boolean; conversationText?: string }) {
-    this.recordConversationLine(message, {
-      visible: true,
-      isUser: options?.isUser,
-      conversationText: options?.conversationText
+  private appendMessage(message: string, options?: { isUser?: boolean; pending?: boolean }): string {
+    const id = this.nextLogEntryId();
+    this.appendLogEntry({
+      id,
+      kind: "text",
+      text: message,
+      isUser: options?.isUser ?? false,
+      pending: options?.pending ?? false
     });
+    return id;
   }
 
-  private recordConversationLine(
-    message: string,
-    options?: { visible?: boolean; isUser?: boolean; conversationText?: string }
-  ) {
-    const isVisible = options?.visible ?? true;
-    const isUser = options?.isUser ?? false;
-    const conversationText = options?.conversationText ?? message;
-    this.conversationLines = [...this.conversationLines, conversationText].slice(-200);
-    if (isVisible) {
-      this.appendLogEntry({ id: this.nextLogEntryId(), kind: "text", text: message, isUser });
-    }
-  }
-
-  private recordHiddenConversationLine(message: string) {
-    this.recordConversationLine(message, { visible: false });
+  private updateMessage(id: string, text: string, options?: { pending?: boolean }): void {
+    this.messages = this.messages.map((entry) => {
+      if (entry.id !== id || entry.kind !== "text") {
+        return entry;
+      }
+      return { ...entry, text, pending: options?.pending ?? false };
+    });
   }
 
   private appendLogEntry(entry: PanelDetailLogEntry) {
@@ -203,12 +237,13 @@ export class TripApp extends LitElement {
     return `log-${this.logEntryCounter}`;
   }
 
-  private buildConversationHistory(): string {
-    return this.conversationLines.slice(-50).join("\n");
-  }
-
   private async handlePanelSubmit(event: CustomEvent<{ text: string }>) {
     await this.submitCommand(event.detail.text);
+  }
+
+  private handlePanelStop() {
+    this.chatbotStopRequested = true;
+    this.appendMessage("ℹ Stop requested...");
   }
 
   connectedCallback() {
@@ -220,12 +255,24 @@ export class TripApp extends LitElement {
       lookupActivityByUidFn,
     onFocusedDateChangeFn  
     );
+    this.applyMarkedActivities(panelMarks.getMarked());
+    this.applyMarkedDates(panelDateMarks.getMarked());
+    this.activityMarksUnsubscribe = panelMarks.subscribe((uids) => this.applyMarkedActivities(uids));
+    this.dateMarksUnsubscribe = panelDateMarks.subscribe((dates) => this.applyMarkedDates(dates));
     this.tryAutoRestoreTrip();
     void this.loadConversationHistory(this.currentTripId);
     void this.announceChatConnection();
   }
 
   disconnectedCallback() {
+    if (this.activityMarksUnsubscribe) {
+      this.activityMarksUnsubscribe();
+      this.activityMarksUnsubscribe = null;
+    }
+    if (this.dateMarksUnsubscribe) {
+      this.dateMarksUnsubscribe();
+      this.dateMarksUnsubscribe = null;
+    }
     panelFocus.detachHost(this);
     super.disconnectedCallback();
   }
@@ -277,13 +324,18 @@ export class TripApp extends LitElement {
 
   private updatePanels(model: TripModel) {
     this.planTitle = this.derivePlanTitle(model);
-    const lines = buildPlanLines(model.activities);
-    this.planLines = lines;
-    this.onFocusedDateChange(lines);
+    this.refreshPlanLines(model.activities, model.daySummaries);
 
     if (!panelFocus.date) {
       panelFocus.date = loadFocusedDate(this.currentTripId);
     }
+  }
+
+  private refreshPlanLines(activities: Activity[], daySummaries?: TripModel["daySummaries"]) {
+    const lines = buildPlanLines(activities, this.markedActivitySet, this.markedDateSet, daySummaries);
+    this.planLines = lines;
+    planDayRegistry.updateFromPlanLines(lines);
+    this.onFocusedDateChange(lines);
   }
 
   private derivePlanTitle(model?: TripModel | null) {
@@ -328,7 +380,72 @@ export class TripApp extends LitElement {
     } else {
       panelFocus.date = toKey;
     }
-    void this.submitCommand(`/movedate from="${fromKey}" to="${toKey}"`, { skipChat: true });
+    void this.submitCommand(`/moveday from="${fromKey}" to="${toKey}"`, { skipChat: true });
+  }
+
+  private handlePlanDateRangeMark(event: CustomEvent<{ date: string }>) {
+    const targetDate = event.detail?.date;
+    if (!targetDate) {
+      return;
+    }
+
+    const lines = this.planLines;
+    if (!lines.length) {
+      return;
+    }
+
+    const targetIndex = lines.findIndex((line) => line.kind === "dated" && line.date === targetDate);
+    if (targetIndex === -1) {
+      return;
+    }
+
+    const anchorDate = panelFocus.date;
+    if (!anchorDate) {
+      return;
+    }
+
+    const anchorIndex = lines.findIndex((line) => line.kind === "dated" && line.date === anchorDate);
+    if (anchorIndex === -1) {
+      return;
+    }
+
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+
+    let allMarked = true;
+    for (let i = start; i <= end; i += 1) {
+      const line = lines[i];
+      if (!line || line.kind !== "dated" || !this.markedDateSet.has(line.date)) {
+        allMarked = false;
+        break;
+      }
+    }
+
+    for (let i = start; i <= end; i += 1) {
+      const line = lines[i];
+      if (!line || line.kind !== "dated") {
+        continue;
+      }
+      if (allMarked) {
+        panelDateMarks.unmark(line.date);
+      } else {
+        panelDateMarks.mark(line.date);
+      }
+    }
+
+    panelFocus.date = targetDate;
+  }
+
+  private handlePlanDateToggleMark(event: CustomEvent<{ date: string; mark: boolean }>) {
+    const date = event.detail?.date?.trim();
+    if (!date) {
+      return;
+    }
+    if (event.detail?.mark) {
+      panelDateMarks.mark(date);
+    } else {
+      panelDateMarks.unmark(date);
+    }
   }
 
   private onFocusedDateChange(lines: PlanLine[]) {
@@ -338,7 +455,61 @@ export class TripApp extends LitElement {
     );
 
     this.dayTitle = existing ? existing.fullDisplayDate : "Day";
-    this.dayItems = existing ? buildDayItems(existing.activities, describeActivity) : [];
+    this.dayItems = existing
+      ? buildDayItems(existing.activities, describeActivity, this.markedActivitySet)
+      : [];
+
+    // Update indicator state from the focused PlanLine
+    this.dayFlightCount = existing?.flightCount ?? 0;
+    this.dayFlightBooked = existing?.flightBooked ?? false;
+    this.dayHasRentalCar = existing?.hasRentalCar ?? false;
+    this.dayRentalCarBooked = existing?.rentalCarBooked ?? false;
+    this.dayLodgingStatus = existing?.lodgingStatus ?? "none";
+    this.dayLodgingCity = existing?.lodgingCity;
+    this.dayMealCount = existing?.mealCount ?? 0;
+    this.dayMealsNeedingReservation = existing?.mealsNeedingReservation ?? 0;
+    this.dayHasDateMismatchIssue = existing?.hasDateMismatchIssue ?? false;
+    this.dayIssueNoTransportToLodging = existing?.issueNoTransportToLodging ?? false;
+    this.dayIssueNoTransportToFlight = existing?.issueNoTransportToFlight ?? false;
+
+    // Get mismatched UIDs from day summary for activity-level issue indicators
+    const daySummary = existing && this.tripModel?.daySummaries?.find(s => s.date === existing.date);
+    const mismatchStr = daySummary?.issueActivitiesWithMismatchedBookingDates ?? "";
+    this.dayMismatchedUids = new Set(mismatchStr.split(/\s+/).filter(Boolean));
+  }
+
+  private applyMarkedActivities(uids: string[]) {
+    const nextActivityList = Array.isArray(uids) ? [...uids] : [];
+    const changed =
+      nextActivityList.length !== this.markedActivityIds.length ||
+      nextActivityList.some((uid, index) => uid !== this.markedActivityIds[index]);
+
+    if (changed) {
+      this.markedActivityIds = nextActivityList;
+      this.markedActivitySet = new Set(nextActivityList);
+      this.refreshMarkedViews();
+    }
+  }
+
+  private applyMarkedDates(dates: string[]) {
+    const nextDateList = Array.isArray(dates) ? [...dates] : [];
+    const changed =
+      nextDateList.length !== this.markedDateKeys.length ||
+      nextDateList.some((date, index) => date !== this.markedDateKeys[index]);
+
+    if (changed) {
+      this.markedDateKeys = nextDateList;
+      this.markedDateSet = new Set(nextDateList);
+      this.refreshMarkedViews();
+    }
+  }
+
+  private refreshMarkedViews() {
+    if (this.tripModel) {
+      this.refreshPlanLines(this.tripModel.activities, this.tripModel.daySummaries);
+    } else {
+      this.onFocusedDateChange(this.planLines);
+    }
   }
 
   private handleDayActivityHover(event: CustomEvent<{ activity: Activity | null }>) {
@@ -347,6 +518,64 @@ export class TripApp extends LitElement {
 
   private handleDayActivityFocus(event: CustomEvent<{ activity: Activity }>) {
     panelFocus.activityUid = event.detail.activity.uid;
+  }
+
+  private handleDayActivityRangeMark(event: CustomEvent<{ uid: string; index: number }>) {
+    const uid = event.detail?.uid?.trim();
+    const index = event.detail?.index ?? -1;
+    if (!uid || index < 0) {
+      return;
+    }
+    const items = this.dayItems;
+    if (!items.length) {
+      return;
+    }
+    const anchorUid = panelFocus.activityUid;
+    if (!anchorUid) {
+      return;
+    }
+
+    const anchorIndex = items.findIndex((entry) => entry.activity?.uid === anchorUid);
+    if (anchorIndex === -1) {
+      return;
+    }
+    const start = Math.min(anchorIndex, index);
+    const end = Math.max(anchorIndex, index);
+
+    let allMarked = true;
+    for (let i = start; i <= end; i += 1) {
+      const activityUid = items[i]?.activity?.uid;
+      if (!activityUid || !this.markedActivitySet.has(activityUid)) {
+        allMarked = false;
+        break;
+      }
+    }
+
+    for (let i = start; i <= end; i += 1) {
+      const activityUid = items[i]?.activity?.uid;
+      if (!activityUid) {
+        continue;
+      }
+      if (allMarked) {
+        panelMarks.unmark(activityUid);
+      } else {
+        panelMarks.mark(activityUid);
+      }
+    }
+
+    panelFocus.activityUid = uid;
+  }
+
+  private handleDayActivityToggleMark(event: CustomEvent<{ uid: string; mark: boolean }>) {
+    const uid = event.detail?.uid?.trim();
+    if (!uid) {
+      return;
+    }
+    if (event.detail?.mark) {
+      panelMarks.mark(uid);
+    } else {
+      panelMarks.unmark(uid);
+    }
   }
 
   private handleDayActivityDragState(event: CustomEvent<{ active: boolean; uid?: string; date?: string | null }>) {
@@ -447,29 +676,34 @@ export class TripApp extends LitElement {
     }
 
     const shouldShowSearchResults = options?.showSearchResults ?? true;
+    
+    // Reset stop flag when starting a new command
+    this.chatbotStopRequested = false;
+    
     const result = await processUserCommand({
       text,
       currentTripId: this.currentTripId,
-      focusedUid: panelFocus.activityUid,
-        appendMessage: (message, meta) => this.appendMessage(message, meta),
+      focusSummary: panelFocus.describeFocus(),
+      markedActivities: this.markedActivityIds,
+      markedDates: this.markedDateKeys,
+      appendMessage: (message, meta) => this.appendMessage(message, meta),
+      updateMessage: (id, newText, meta) => this.updateMessage(id, newText, meta),
       setSending: (sending) => {
         this.sending = sending;
       },
       rememberTripModel: (model) => this.rememberTripModel(model),
+      updateMarks: (activities, dates) => {
+        if (activities !== undefined) panelMarks.setAll(activities);
+        if (dates !== undefined) panelDateMarks.setAll(dates);
+      },
+      shouldStop: () => this.chatbotStopRequested,
       echoCommands: !(options?.suppressEcho ?? false)
     });
 
     if (result.payload?.searchResults) {
       const queryText = result.payload.query ?? "(unknown query)";
       const snippets = result.payload.searchResults;
-      const detailedSummary = `Web search for "${queryText}" returned ${snippets.length} result${snippets.length === 1 ? "" : "s"}.`;
       const humanSummary = `Search "${queryText}" (${snippets.length})`;
-      const lines: string[] = [];
-      lines.push(detailedSummary);
-      snippets.forEach((snippet, index) => {
-        lines.push(`${index + 1}. ${snippet}`);
-      });
-      this.recordConversationLine(lines.join("\n"), { visible: false });
       if (shouldShowSearchResults) {
         this.appendLogEntry({
           id: this.nextLogEntryId(),
@@ -480,11 +714,6 @@ export class TripApp extends LitElement {
       }
     }
 
-    if (!result.ok || options?.skipChat) {
-      return result;
-    }
-
-    await this.requestChatResponse(text);
     return result;
   }
 
@@ -514,64 +743,6 @@ export class TripApp extends LitElement {
       const message = error instanceof Error ? error.message : String(error);
       this.appendMessage(`ChatGPT connection failed: ${message}`);
     }
-  }
-
-  private async requestChatResponse(userInput: string, options?: { autoDepth?: number }): Promise<void> {
-    const trimmed = userInput.trim();
-    if (!trimmed) {
-      return;
-    }
-    const autoDepth = options?.autoDepth ?? 0;
-    this.sending = true;
-    try {
-      const response = await fetch(`/api/trip/${this.currentTripId}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: userInput,
-          conversationHistory: this.buildConversationHistory(),
-          focusSummary: panelFocus.describeFocus()
-        })
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        ok?: boolean;
-        text?: string;
-        error?: string;
-        model?: string;
-      };
-
-      if (response.ok && payload?.ok && payload.text) {
-        const modelLabel = payload.model ?? "chat";
-        this.appendMessage(`GPT (${modelLabel}): ${payload.text}`);
-        const needsFollowUp = await this.handleAssistantCommands(payload.text);
-        if (needsFollowUp && autoDepth < AUTO_CHAT_MAX_FOLLOWUPS) {
-          const nextDepth = autoDepth + 1;
-          await this.requestChatResponse("(auto) continue", { autoDepth: nextDepth });
-        }
-      } else {
-        const detail = payload?.error ?? response.statusText ?? "Failed";
-        this.appendMessage(`GPT error: ${detail}`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.appendMessage(`GPT error: ${message}`);
-    } finally {
-      this.sending = false;
-    }
-  }
-
-  private async handleAssistantCommands(responseText: string): Promise<boolean> {
-    const slashCommands = extractSlashCommandLines(responseText);
-    if (!slashCommands.length) {
-      return false;
-    }
-    const commandBlock = slashCommands.join("\n");
-    const result = await this.submitCommand(commandBlock, { skipChat: true, suppressEcho: true });
-    if (!result?.ok) {
-      return false;
-    }
-    const requiresFollowUp = slashCommands.some((line) => line.trimStart().startsWith("/websearch"));
-    return requiresFollowUp;
   }
 
   private tryAutoRestoreTrip() {
@@ -668,7 +839,6 @@ export class TripApp extends LitElement {
       this.resetConversationLog();
       return;
     }
-    this.conversationLines = [normalized];
     const restored = this.parseConversationHistoryForDisplay(normalized);
     this.logEntryCounter = restored.length;
     this.messages = restored;
@@ -765,7 +935,6 @@ export class TripApp extends LitElement {
 
   private resetConversationLog() {
     this.messages = [];
-    this.conversationLines = [];
     this.logEntryCounter = 0;
   }
 

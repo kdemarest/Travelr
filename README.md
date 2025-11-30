@@ -9,17 +9,34 @@ Travelr is a personal trip planner with a Node.js + TypeScript API (`server/`) a
 - Node.js 20.9+ (includes npm 10+)
 - VS Code optional but recommended for debugging (no Docker required at this stage)
 
-## Getting Started
+## Getting Started - All Environments
 
-1. **Install dependencies**
+Go get:
+
+1. a ChatGPT API Key
+2. A Google Custonm Search ID
+3. On Google Cloud get a Custom Search API key
+4. Follow the environment-specific instructions below.
+
+## Developing in Docker/Linux
+
+- Follow the README.md in /devenvsetup
+
+## Developing in Windows 11
+
+1. **Install basic dev environment**
+- The basic environment (Node, Python, VSCode) is all part of Ken's standard "new computer" install document
+
+1. **Install NodeJS modules**
 
 	```powershell
 	npm install
 	```
 
-2. **Set up the Travelr API keys (Windows Credential Manager only)**
+1. **Set up the Travelr API keys (Windows Credential Manager only)**
 
 	- Install Python 3.x if needed, then `pip install keyring`.
+	- See Ken's password file for a fully runnable version of the code below.
 	- In a Python REPL, store each secret under the TRAVELR service:
 		```python
 		import keyring
@@ -31,41 +48,28 @@ Travelr is a personal trip planner with a Node.js + TypeScript API (`server/`) a
 	- Confirm the entries exist under **Control Panel → Credential Manager → Windows Credentials → Generic Credentials** with targets `TRAVELR/OPENAI_API_KEY`, `TRAVELR/GOOGLE_CS_API_KEY`, and `TRAVELR/GOOGLE_CS_CX`.
 	- Verify OpenAI connectivity any time with `npm run gpt:first-light --workspace server`, which invokes `server/src/gpt.ts`.
 
-3. **Configure Google Custom Search**
 
-	- Create a Programmable Search Engine and enable the “Custom Search API” in the same Google Cloud project as your API key.
-	- Copy the Search Engine ID (`cx`) into the credential entry `TRAVELR/GOOGLE_CS_CX` (no environment fallback).
-	- The server reads these credentials directly from Windows Credential Manager and logs every API response to `data/last_search_result.html` for inspection.
+## Running Travelr
 
-4. **Run the API (watch mode)**
+On windows, use Launch.bat
 
-	```powershell
-	npm run dev --workspace server
-	```
-
-	This uses `nodemon` + `tsx` to rebuild on change and serves the HTTP API at `http://localhost:4000`.
-
-5. **Run the client (watch mode)**
-
-	```powershell
-	npm run dev --workspace client
-	```
-
-	Vite serves the lit app at `http://localhost:5173`, proxying `/api` calls to the server.
-
-6. **Type-check and build** (optional sanity checks)
-
-	```powershell
+On Docker/Ubuntu to compile...
 	npm run typecheck --workspace server
 	npm run build --workspace server
 	npm run build --workspace client
-	```
+
+On Docker/Ubuntu to run...
+	npm run dev --workspace server
+	npm run dev --workspace client
+
+Note: Vite serves the lit app at `http://localhost:5173`, proxying `/api` calls to the server.
+
 
 ## Project Layout
 
 - `server/` – Express-based API, future journal/parser/reducer modules, outputs to `server/dist/`.
 - `client/` – Vite + lit frontend, entry point at `client/index.html` and components under `client/src/`.
-- `data/` – Journals (`<tripName>.json`) that the backend replays; the server ensures this directory exists.
+- `trips/` – Journals (`<tripName>.travlrjournal`) the backend replays; the server ensures this directory exists.
 - `tsconfig.base.json` – Shared TypeScript compiler defaults for both workspaces.
 
 ## Slash Commands

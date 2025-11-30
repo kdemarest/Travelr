@@ -1,0 +1,12 @@
+[
+  {
+    "currencyAlpha3": "USD",
+    "exchangeRateToUSD": 1,
+    "exchangeRateLastUpdate": "2025-11-30T04:09:13.779Z"
+  },
+  {
+    "currencyAlpha3": "JPY",
+    "exchangeRateToUSD": 0.006403,
+    "exchangeRateLastUpdate": "2025-11-30T00:02:31.000Z"
+  }
+]

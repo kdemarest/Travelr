@@ -1,12 +1,14 @@
 import { LitElement, PropertyValues, css, html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
+import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { marked } from "marked";
 import { dateLinkStyles, renderTextWithDateLinks } from "../date-link";
 import { parseCanonicalCommand } from "../command-parse";
 import type { Activity } from "../types";
 import { formatMonthDayLabel } from "../datetime";
 
 export type PanelDetailLogEntry =
-  | { id: string; kind: "text"; text: string; isUser?: boolean }
+  | { id: string; kind: "text"; text: string; isUser?: boolean; pending?: boolean }
   | { id: string; kind: "search"; summary: string; snippets: string[] };
 
 type LinkMarkup = {
@@ -15,12 +17,29 @@ type LinkMarkup = {
   label: string;
 };
 
-type CommandRenderContext = {
-  entryId: string;
-  nextIndex: number;
+type MessageBlock =
+  | { type: "text"; text: string }
+  | { type: "command"; lines: string[] };
+
+type IntentGroup = {
+  intentWhat: string;
+  part: number;
+  commands: string[];
 };
 
+type RenderSegment =
+  | { type: "text"; text: string }
+  | { type: "commands"; lines: string[] }  // ungrouped commands (before any intent)
+  | { type: "intent-group"; group: IntentGroup };
+
 const PENDING_TIMEOUT_MS = 4000;
+const LINK_MARKUP_PATTERN = /<<(?:link|select)\s+([^>]+)>>/gi;
+const DATE_TEXT_PATTERN = /\b\d{4}-\d{2}-\d{2}\b/;
+
+marked.setOptions({
+  breaks: true,
+  gfm: true
+});
 
 export class PanelDetail extends LitElement {
   static styles = [css`
@@ -31,22 +50,66 @@ export class PanelDetail extends LitElement {
       gap: 0.75rem;
       color: #0f172a;
       font-family: inherit;
+      overflow: hidden;
+      min-width: 0;
     }
 
-    .log {
+    .chat-log {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 0.75rem;
       border: 1px solid #cbd5f5;
       border-radius: 8px;
       background: transparent;
+      min-width: 0;
     }
 
-    .log-line {
+    .chat-log-line {
       font-size: 0.9rem;
       margin-bottom: 0.3rem;
       word-break: break-word;
-      white-space: pre-wrap;
+      white-space: normal;
+      line-height: 1.4;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .chat-log-line :where(p, ul, ol, pre, blockquote) {
+      margin: 0 0 0.5rem;
+      max-width: 100%;
+    }
+
+    .chat-log-line :where(ul, ol) {
+      padding-left: 1.2rem;
+    }
+
+    .chat-log-line code {
+      font-family: Consolas, "Courier New", monospace;
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 0.05rem 0.3rem;
+      font-size: 0.85rem;
+    }
+
+    .chat-log-line pre {
+      background: #d3cebcff;
+      border-radius: 6px;
+      padding: 0.6rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      max-width: 400px;
+    }
+
+    .chat-log-line pre code {
+      background: transparent;
+      padding: 0;
+    }
+
+    .chat-log-line blockquote {
+      border-left: 3px solid #cbd5f5;
+      padding-left: 0.75rem;
+      color: #475569;
     }
 
     .user-message {
@@ -119,6 +182,55 @@ export class PanelDetail extends LitElement {
       display: inline-block;
       padding-left: 0.75rem;
       text-indent: -0.75rem;
+    }
+
+    .pending-command .command-chip {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    .pending-command .command-full-text {
+      opacity: 0.5;
+    }
+
+    .intent-group {
+      display: inline-flex;
+      flex-direction: column;
+      margin: 0.1rem 0.2rem 0.1rem 0;
+    }
+
+    .intent-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid #86efac;
+      background: #f0fdf4;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      cursor: pointer;
+      color: #166534;
+    }
+
+    .intent-chip:hover,
+    .intent-chip:focus-visible {
+      border-color: #22c55e;
+      background: #dcfce7;
+      outline: none;
+    }
+
+    .intent-chip .intent-chevron {
+      font-size: 0.7rem;
+      margin-right: 0.1rem;
+    }
+
+    .intent-commands {
+      display: flex;
+      flex-wrap: wrap;
+      padding: 0.25rem 0 0 0.5rem;
+      border-left: 2px solid #86efac;
+      margin-left: 0.5rem;
     }
 
     .search-entry {
@@ -217,6 +329,10 @@ export class PanelDetail extends LitElement {
       cursor: pointer;
     }
 
+    .submit-button.stop-button {
+      background: #dc2626;
+    }
+
     .submit-button:disabled,
     .icon-button:disabled {
       opacity: 0.6;
@@ -239,15 +355,24 @@ export class PanelDetail extends LitElement {
   pending = false;
 
   private pendingTimeout?: number;
-  private logEl?: HTMLDivElement;
+  private chatLogEl?: HTMLDivElement;
   private expandedEntries = new Set<string>();
   private expandedCommandKeys = new Set<string>();
+  private expandedIntentKeys = new Set<string>();
   private activityByUid = new Map<string, Activity>();
+  private readonly chatLogClickHandler = (event: Event) => this.handleChatLogClick(event);
+  private readonly chatLogKeydownHandler = (event: KeyboardEvent) => this.handleChatLogKeydown(event);
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.addEventListener("click", this.chatLogClickHandler);
+    this.addEventListener("keydown", this.chatLogKeydownHandler);
+  }
 
   protected updated(changed: PropertyValues<PanelDetail>) {
-    this.logEl = this.renderRoot?.querySelector<HTMLDivElement>(".log") ?? undefined;
+    this.chatLogEl = this.renderRoot?.querySelector<HTMLDivElement>(".chat-log") ?? undefined;
     if (changed.has("messages")) {
-      this.logEl?.scrollTo({ top: this.logEl.scrollHeight });
+      this.chatLogEl?.scrollTo({ top: this.chatLogEl.scrollHeight });
       const ids = new Set(this.messages.map((entry) => entry.id));
       for (const id of Array.from(this.expandedEntries)) {
         if (!ids.has(id)) {
@@ -277,6 +402,8 @@ export class PanelDetail extends LitElement {
   }
 
   disconnectedCallback() {
+    this.removeEventListener("click", this.chatLogClickHandler);
+    this.removeEventListener("keydown", this.chatLogKeydownHandler);
     super.disconnectedCallback();
     this.clearPendingTimeout();
   }
@@ -329,6 +456,15 @@ export class PanelDetail extends LitElement {
     );
   }
 
+  private handleStopClick() {
+    this.dispatchEvent(
+      new CustomEvent("panel-detail-stop", {
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+
   private startPendingWindow() {
     this.pending = true;
     this.clearPendingTimeout();
@@ -362,10 +498,10 @@ export class PanelDetail extends LitElement {
     this.requestUpdate();
   }
 
-  private renderLogEntry(entry: PanelDetailLogEntry) {
+  private renderChatLogEntry(entry: PanelDetailLogEntry) {
     if (entry.kind === "text") {
-      const classes = { "log-line": true, "user-message": Boolean(entry.isUser) };
-      return html`<div class=${classMap(classes)}>${this.renderTextWithLinks(entry.text, entry.id)}</div>`;
+      const classes = { "chat-log-line": true, "user-message": Boolean(entry.isUser) };
+      return html`<div class=${classMap(classes)}>${this.renderTextWithLinks(entry.text, entry.id, entry.pending)}</div>`;
     }
     const expanded = this.expandedEntries.has(entry.id);
     return html`
@@ -385,8 +521,8 @@ export class PanelDetail extends LitElement {
 
   render() {
     return html`
-      <div class="log">
-        ${this.messages.map((entry) => this.renderLogEntry(entry)) }
+      <div class="chat-log">
+        ${this.messages.map((entry) => this.renderChatLogEntry(entry)) }
       </div>
       <form @submit=${this.handleSubmit}>
         <textarea
@@ -434,41 +570,321 @@ export class PanelDetail extends LitElement {
               </svg>
             </button>
           </div>
-          <button type="submit" class="submit-button" ?disabled=${this.pending}>Send</button>
+          ${this.serverBusy
+            ? html`<button type="button" class="submit-button stop-button" @click=${this.handleStopClick}>Stop</button>`
+            : html`<button type="submit" class="submit-button" ?disabled=${this.pending}>Send</button>`
+          }
         </div>
       </form>
     `;
   }
 
-  private renderTextWithLinks(text: string, entryId?: string) {
+  private renderTextWithLinks(text: string, entryId?: string, pending?: boolean) {
     const segments: Array<ReturnType<typeof html>> = [];
-    const regex = /<<(?:link|select)\s+([^>]+)>>/gi;
+    const renderSegments = this.buildRenderSegments(text ?? "");
+    let commandIndex = 0;
+    let intentIndex = 0;
+
+    for (const seg of renderSegments) {
+      if (seg.type === "text" && seg.text.trim()) {
+        segments.push(this.renderMarkdownBlock(seg.text));
+      } else if (seg.type === "commands") {
+        for (const line of seg.lines) {
+          const key = entryId ? `${entryId}:cmd:${commandIndex++}` : undefined;
+          segments.push(this.renderCommandChip(line, key, pending));
+        }
+      } else if (seg.type === "intent-group") {
+        const key = entryId ? `${entryId}:intent:${intentIndex++}` : undefined;
+        segments.push(this.renderIntentGroup(seg.group, key, pending));
+      }
+    }
+
+    if (!segments.length) {
+      segments.push(html``);
+    }
+
+    return segments;
+  }
+
+  private buildRenderSegments(text: string): RenderSegment[] {
+    const blocks = this.splitMessageBlocks(text);
+    const segments: RenderSegment[] = [];
+    
+    let currentIntent: string | null = null;
+    let currentPart = 0;
+    let currentCommands: string[] = [];
+    
+    const flushIntentGroup = () => {
+      if (currentIntent && currentCommands.length > 0) {
+        segments.push({
+          type: "intent-group",
+          group: {
+            intentWhat: currentIntent,
+            part: currentPart,
+            commands: [...currentCommands]
+          }
+        });
+        currentCommands = [];
+        currentPart++;
+      }
+    };
+    
+    const flushUngroupedCommands = () => {
+      if (!currentIntent && currentCommands.length > 0) {
+        segments.push({ type: "commands", lines: [...currentCommands] });
+        currentCommands = [];
+      }
+    };
+    
+    for (const block of blocks) {
+      if (block.type === "text") {
+        // Text always renders - flush any pending commands first
+        flushIntentGroup();
+        flushUngroupedCommands();
+        if (block.text.trim()) {
+          segments.push({ type: "text", text: block.text });
+        }
+      } else {
+        // Command block
+        for (const line of block.lines) {
+          const parsed = parseCanonicalCommand(line);
+          const isIntent = parsed?.keyword?.toLowerCase() === "/intent";
+          
+          if (isIntent) {
+            // New intent - flush previous group
+            flushIntentGroup();
+            flushUngroupedCommands();
+            currentIntent = parsed?.args?.what ?? "Intent";
+            currentPart = 1;
+            currentCommands = [];
+          } else {
+            // Regular command
+            currentCommands.push(line);
+          }
+        }
+      }
+    }
+    
+    // Flush any remaining
+    flushIntentGroup();
+    flushUngroupedCommands();
+    
+    return segments;
+  }
+
+  private renderIntentGroup(group: IntentGroup, key?: string, pending?: boolean) {
+    const expanded = key ? this.expandedIntentKeys.has(key) : false;
+    const label = group.part > 1 
+      ? `${group.intentWhat} (part ${group.part})`
+      : group.intentWhat;
+    const clippedLabel = this.clipIntentLabel(label);
+    const chevron = expanded ? "▼" : "▶";
+    const chipClasses = { "intent-chip": true, "pending-command": Boolean(pending) };
+    
+    return html`
+      <span class="intent-group">
+        <button
+          type="button"
+          class=${classMap(chipClasses)}
+          title=${`${group.commands.length} command(s): ${label}`}
+          @click=${() => this.handleIntentToggle(key)}
+        ><span class="intent-chevron">${chevron}</span>${clippedLabel}</button>
+        ${expanded ? html`
+          <span class="intent-commands">
+            ${group.commands.map((cmd, i) => {
+              const cmdKey = key ? `${key}:${i}` : undefined;
+              return this.renderCommandChip(cmd, cmdKey, pending);
+            })}
+          </span>
+        ` : null}
+      </span>
+    `;
+  }
+
+  private handleIntentToggle(key?: string) {
+    if (!key) return;
+    if (this.expandedIntentKeys.has(key)) {
+      this.expandedIntentKeys.delete(key);
+    } else {
+      this.expandedIntentKeys.add(key);
+    }
+    this.requestUpdate();
+  }
+
+  private clipIntentLabel(label: string): string {
+    if (label.length <= 120) {
+      return label;
+    }
+    return `${label.slice(0, 117).trimEnd()}…`;
+  }
+
+  private splitMessageBlocks(text: string): MessageBlock[] {
+    const normalized = text.replace(/\r\n/g, "\n");
+    const lines = normalized.split("\n");
+    const blocks: MessageBlock[] = [];
+    let textBuffer: string[] = [];
+    let commandBuffer: string[] = [];
+
+    const flushText = () => {
+      if (!textBuffer.length) {
+        return;
+      }
+      blocks.push({ type: "text", text: textBuffer.join("\n") });
+      textBuffer = [];
+    };
+
+    const flushCommands = () => {
+      if (!commandBuffer.length) {
+        return;
+      }
+      blocks.push({ type: "command", lines: [...commandBuffer] });
+      commandBuffer = [];
+    };
+
+    for (const line of lines) {
+      const trimmed = line.trimStart();
+      const isCommand = trimmed.startsWith("/");
+      if (isCommand) {
+        flushText();
+        commandBuffer.push(trimmed);
+      } else {
+        flushCommands();
+        textBuffer.push(line);
+      }
+    }
+
+    flushText();
+    flushCommands();
+
+    return blocks;
+  }
+
+  private renderMarkdownBlock(text: string) {
+    const htmlString = this.buildMarkdownHtml(text);
+    if (!htmlString) {
+      return html``;
+    }
+    return html`${unsafeHTML(htmlString)}`;
+  }
+
+  private buildMarkdownHtml(text: string): string {
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (!normalized.trim()) {
+      return "";
+    }
+    const { content, placeholders } = this.replaceLinkMarkupWithPlaceholders(normalized);
+    const rendered = marked.parse(content);
+    if (typeof rendered !== "string") {
+      return "";
+    }
+    return this.enhanceMarkdownHtml(rendered, placeholders);
+  }
+
+  private replaceLinkMarkupWithPlaceholders(text: string) {
+    const placeholders: LinkMarkup[] = [];
+    LINK_MARKUP_PATTERN.lastIndex = 0;
+    const content = text.replace(LINK_MARKUP_PATTERN, (match, inner) => {
+      const markup = this.parseLinkMarkup(inner);
+      if (!markup) {
+        return match;
+      }
+      const index = placeholders.push(markup) - 1;
+      return `<span data-link-placeholder="${index}"></span>`;
+    });
+    return { content, placeholders };
+  }
+
+  private enhanceMarkdownHtml(htmlContent: string, placeholders: LinkMarkup[]): string {
+    if (typeof document === "undefined") {
+      return htmlContent;
+    }
+    const template = document.createElement("template");
+    template.innerHTML = htmlContent;
+    template.content.querySelectorAll("script, style").forEach((el) => el.remove());
+
+    placeholders.forEach((markup, index) => {
+      template.content.querySelectorAll(`[data-link-placeholder="${index}"]`).forEach((node) => {
+        node.replaceWith(this.createLinkChipElement(markup));
+      });
+    });
+
+    this.decorateDateLinks(template.content);
+
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(template.content);
+    return wrapper.innerHTML;
+  }
+
+  private createLinkChipElement(markup: LinkMarkup): HTMLElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link-chip";
+    button.dataset.linkType = markup.type;
+    button.dataset.linkValue = markup.value;
+    button.dataset.linkLabel = markup.label;
+    button.textContent = markup.label;
+    return button;
+  }
+
+  private decorateDateLinks(target: DocumentFragment) {
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      const textNode = current as Text;
+      const textContent = textNode.textContent ?? "";
+      if (DATE_TEXT_PATTERN.test(textContent) && !this.shouldSkipDateLinkWrapping(textNode)) {
+        nodes.push(textNode);
+      }
+      current = walker.nextNode();
+    }
+    nodes.forEach((node) => this.wrapDateMatches(node));
+  }
+
+  private shouldSkipDateLinkWrapping(node: Text): boolean {
+    let parent = node.parentElement;
+    while (parent) {
+      const tag = parent.tagName.toLowerCase();
+      if (tag === "code" || tag === "pre") {
+        return true;
+      }
+      parent = parent.parentElement;
+    }
+    return false;
+  }
+
+  private wrapDateMatches(node: Text) {
+    const text = node.textContent ?? "";
+    if (!text) {
+      return;
+    }
+    const regex = new RegExp(DATE_TEXT_PATTERN.source, "g");
+    const fragment = document.createDocumentFragment();
     let lastIndex = 0;
     let match: RegExpExecArray | null = null;
-    const commandContext = entryId ? { entryId, nextIndex: 0 } : undefined;
 
     while ((match = regex.exec(text)) !== null) {
       if (match.index > lastIndex) {
-        this.pushDecoratedText(segments, text.slice(lastIndex, match.index), commandContext);
+        fragment.append(text.slice(lastIndex, match.index));
       }
-
-      const markup = this.parseLinkMarkup(match[1]);
-      if (markup) {
-        segments.push(
-          html`<button type="button" class="link-chip" @click=${() => this.handleLinkMarkup(markup)}>${markup.label}</button>`
-        );
-      } else {
-        this.pushDecoratedText(segments, match[0], commandContext);
-      }
-
+      fragment.append(this.createDateLinkElement(match[0]));
       lastIndex = regex.lastIndex;
     }
 
     if (lastIndex < text.length) {
-      this.pushDecoratedText(segments, text.slice(lastIndex), commandContext);
+      fragment.append(text.slice(lastIndex));
     }
 
-    return segments;
+    node.replaceWith(fragment);
+  }
+
+  private createDateLinkElement(value: string): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "date-link";
+    button.dataset.date = value;
+    button.textContent = value;
+    return button;
   }
 
   private parseLinkMarkup(raw: string): LinkMarkup | null {
@@ -514,32 +930,6 @@ export class PanelDetail extends LitElement {
     );
   }
 
-  private pushDecoratedText(
-    target: Array<ReturnType<typeof html>>,
-    text: string,
-    commandContext?: CommandRenderContext
-  ) {
-    const lines = text.split("\n");
-    lines.forEach((line, index) => {
-      const trimmed = line.trimStart();
-      if (trimmed.startsWith("/")) {
-        const key = commandContext ? `${commandContext.entryId}:${commandContext.nextIndex++}` : undefined;
-        target.push(this.renderCommandChip(trimmed, key));
-      } else if (line.length) {
-        this.renderDateLinkedTextSegments(line).forEach((segment) => {
-          if (typeof segment === "string") {
-            target.push(html`${segment}`);
-          } else {
-            target.push(segment);
-          }
-        });
-      }
-      if (index < lines.length - 1) {
-        target.push(html`\n`);
-      }
-    });
-  }
-
   private renderDateLinkedTextNode(text: string | null | undefined) {
     const segments = this.renderDateLinkedTextSegments(text);
     return html`${segments}`;
@@ -550,14 +940,15 @@ export class PanelDetail extends LitElement {
     return renderTextWithDateLinks(value, (date) => this.emitDateLink(date));
   }
 
-  private renderCommandChip(command: string, key?: string) {
+  private renderCommandChip(command: string, key?: string, pending?: boolean) {
     const expanded = key ? this.expandedCommandKeys.has(key) : false;
     const labelText = this.buildCommandChipLabel(command);
     const parsed = parseCanonicalCommand(command);
     const commandUid = parsed?.args.uid ?? null;
+    const chipClasses = { "command-chip": true, "pending-command": Boolean(pending) };
     const button = html`<button
       type="button"
-      class="command-chip"
+      class=${classMap(chipClasses)}
       title=${command}
       @click=${() => this.handleCommandChipToggle(key, commandUid)}
     >${labelText}</button>`;
@@ -605,6 +996,13 @@ export class PanelDetail extends LitElement {
     if (!parsed) {
       return this.clipCommandLabel(trimmed);
     }
+    
+    // If the command has a what or hint, use it as the label
+    const intentLabel = parsed.args.what ?? parsed.args.hint;
+    if (intentLabel) {
+      return this.clipCommandLabel(intentLabel);
+    }
+    
     const command = parsed.keyword;
     const lowered = command.toLowerCase();
     if (lowered === "/delete") {
@@ -654,10 +1052,10 @@ export class PanelDetail extends LitElement {
   }
 
   private clipCommandLabel(label: string): string {
-    if (label.length <= 30) {
+    if (label.length <= 60) {
       return label;
     }
-    return `${label.slice(0, 27).trimEnd()}…`;
+    return `${label.slice(0, 57).trimEnd()}…`;
   }
 
   private emitDateLink(date: string) {
@@ -668,6 +1066,80 @@ export class PanelDetail extends LitElement {
         detail: { date }
       })
     );
+  }
+
+  private handleChatLogClick(event: Event) {
+    if (!this.chatLogEl) {
+      return;
+    }
+    const target = this.normalizeEventTarget(event);
+    if (!target || !this.chatLogEl.contains(target)) {
+      return;
+    }
+    const linkChip = target.closest<HTMLElement>(".link-chip[data-link-type]");
+    if (linkChip) {
+      const markup = this.parseLinkDataset(linkChip);
+      if (markup) {
+        event.preventDefault();
+        this.handleLinkMarkup(markup);
+      }
+      return;
+    }
+    const dateLink = target.closest<HTMLElement>(".date-link[data-date]");
+    if (dateLink?.dataset.date) {
+      event.preventDefault();
+      this.emitDateLink(dateLink.dataset.date);
+    }
+  }
+
+  private handleChatLogKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    if (!this.chatLogEl) {
+      return;
+    }
+    const target = this.normalizeEventTarget(event);
+    if (!target || !this.chatLogEl.contains(target)) {
+      return;
+    }
+    const linkChip = target.closest<HTMLElement>(".link-chip[data-link-type]");
+    if (linkChip) {
+      const markup = this.parseLinkDataset(linkChip);
+      if (markup) {
+        event.preventDefault();
+        this.handleLinkMarkup(markup);
+      }
+      return;
+    }
+    const dateLink = target.closest<HTMLElement>(".date-link[data-date]");
+    if (dateLink?.dataset.date) {
+      event.preventDefault();
+      this.emitDateLink(dateLink.dataset.date);
+    }
+  }
+
+  private normalizeEventTarget(event: Event): HTMLElement | null {
+    const path = event.composedPath();
+    for (const node of path) {
+      if (node instanceof HTMLElement) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  private parseLinkDataset(target: HTMLElement): LinkMarkup | null {
+    const type = target.dataset.linkType;
+    if (type !== "activity" && type !== "date") {
+      return null;
+    }
+    const value = target.dataset.linkValue;
+    const label = target.dataset.linkLabel ?? target.textContent ?? "";
+    if (!value || !label) {
+      return null;
+    }
+    return { type, value, label };
   }
 }
 

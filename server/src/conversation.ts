@@ -25,4 +25,14 @@ export class ConversationStore {
     }
     await fs.outputFile(filePath, data, "utf8");
   }
+
+  async append(tripName: string, line: string): Promise<void> {
+    if (!line.trim()) {
+      return;
+    }
+    const filePath = this.getConversationPath(tripName);
+    const existing = await this.read(tripName);
+    const newContent = existing ? `${existing}\n${line}` : line;
+    await fs.outputFile(filePath, newContent, "utf8");
+  }
 }

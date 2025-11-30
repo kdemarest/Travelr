@@ -5,7 +5,6 @@ export type ParsedCommand =
   | AddCommand
   | EditCommand
   | DeleteCommand
-  | MoveDateCommand
   | UndoCommand
   | RedoCommand
   | HelpCommand
@@ -13,7 +12,14 @@ export type ParsedCommand =
   | TripCommand
   | ModelCommand
   | WebSearchCommand
-  | InfoCommand;
+  | AddCountryCommand
+  | RefreshCountriesCommand
+  | UserPrefCommand
+  | MarkCommand
+  | IntentCommand
+  | MoveDayCommand
+  | InsertDayCommand
+  | RemoveDayCommand;
 
 export interface NewTripCommand {
   type: "newtrip";
@@ -61,15 +67,24 @@ export interface WebSearchCommand {
   query: string;
 }
 
-export interface InfoCommand {
-  type: "info";
-  topic?: string;
+export interface AddCountryCommand {
+  type: "addcountry";
+  countryName: string;
+  countryAlpha2?: string;
+  currencyAlpha3?: string;
+  id?: string;
+  exchangeRateToUSD?: number;
+  exchangeRateLastUpdate?: string;
 }
 
-export interface MoveDateCommand {
-  type: "movedate";
-  from: string;
-  to: string;
+export interface RefreshCountriesCommand {
+  type: "refreshcountries";
+}
+
+export interface UserPrefCommand {
+  type: "userpref";
+  key: string;
+  value: unknown;
 }
 
 export interface UndoCommand {
@@ -82,10 +97,37 @@ export interface RedoCommand {
   count: number;
 }
 
+export interface MarkCommand {
+  type: "mark";
+  markType: "activities" | "dates";
+  add: string[];
+  remove: string[];
+}
+
+export interface IntentCommand {
+  type: "intent";
+  what: string;
+}
+
+export interface MoveDayCommand {
+  type: "moveday";
+  from: string;  // YYYY-MM-DD format
+  to: string;    // YYYY-MM-DD format
+}
+
+export interface InsertDayCommand {
+  type: "insertday";
+  after: string;  // Insert a blank day after this date, pushing subsequent days forward
+}
+
+export interface RemoveDayCommand {
+  type: "removeday";
+  date: string;   // Remove this day, pulling subsequent days backward
+}
+
 const TRIP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const TRIP_ID_ARG_PATTERN = /\btripId="([^"]+)"/;
 const ARG_PATTERN = /([A-Za-z0-9_-]+)=("(?:[^"\\]|\\.)*"|[^\s]+)/g;
-const ACTIVITY_TYPES = new Set(["flight", "lodging", "transport", "rentalCar", "visit", "meal", "hike"]);
 
 export function parseCommand(line: string): ParsedCommand {
   const trimmed = line.trim();
@@ -116,14 +158,26 @@ export function parseCommand(line: string): ParsedCommand {
       return parseModel(argsText);
     case "/websearch":
       return parseWebSearch(argsText);
-    case "/info":
-      return parseInfo(argsText);
-    case "/movedate":
-      return parseMoveDate(argsText);
+    case "/addcountry":
+      return parseAddCountry(argsText);
+    case "/refreshcountries":
+      return { type: "refreshcountries" };
+    case "/userpref":
+      return parseUserPref(argsText);
     case "/undo":
       return parseUndo(argsText);
     case "/redo":
       return parseRedo(argsText);
+    case "/mark":
+      return parseMark(argsText);
+    case "/intent":
+      return parseIntent(argsText);
+    case "/moveday":
+      return parseMoveDay(argsText);
+    case "/insertday":
+      return parseInsertDay(argsText);
+    case "/removeday":
+      return parseRemoveDay(argsText);
     default:
       throw new CommandError(`Unsupported command ${keyword}.`);
   }
@@ -154,10 +208,6 @@ function parseAdd(argsText: string): AddCommand {
     throw new CommandError("/add requires an activityType (positional or activityType=...).");
   }
 
-  if (!ACTIVITY_TYPES.has(finalType)) {
-    throw new CommandError(`activityType must be one of: ${Array.from(ACTIVITY_TYPES).join(", ")}`);
-  }
-
   return { type: "add", activityType: finalType, fields: restFields, uid: presetUid };
 }
 
@@ -181,9 +231,51 @@ function parseWebSearch(argsText: string): WebSearchCommand {
   return { type: "websearch", query: query.trim() };
 }
 
-function parseInfo(argsText: string): InfoCommand {
-  const { value: topic } = consumeLeadingBareValue(argsText);
-  return { type: "info", topic: topic?.trim() || undefined };
+function parseAddCountry(argsText: string): AddCountryCommand {
+  const { value: positionalCountry, rest, consumed } = consumeLeadingBareValue(argsText);
+  const fields = parseArgs(consumed ? rest : argsText);
+  const countryName = positionalCountry ?? fields.countryName ?? fields.country ?? fields.name;
+  if (!countryName || !countryName.trim()) {
+    throw new CommandError("/addcountry requires countryName (positional or countryName=...)");
+  }
+  const countryAlpha2 = fields.countryAlpha2 ?? fields.isoCountry ?? fields.code;
+  const currencyAlpha3 = fields.currencyAlpha3 ?? fields.isoCurrency ?? fields.currency;
+  const id = fields.id ?? fields.countryId;
+  const rateRaw = fields.exchangeRateToUSD ?? fields.rate ?? fields.fx ?? fields.exchangeRate;
+  let exchangeRateToUSD: number | undefined;
+  if (rateRaw !== undefined) {
+    const parsed = Number(rateRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new CommandError("exchangeRateToUSD must be a positive number.");
+    }
+    exchangeRateToUSD = parsed;
+  }
+  const exchangeRateLastUpdate = fields.exchangeRateLastUpdate ?? fields.rateDate ?? fields.rateTimestamp;
+  const normalizedRateDate = typeof exchangeRateLastUpdate === "string" ? exchangeRateLastUpdate.trim() : undefined;
+  return {
+    type: "addcountry",
+    countryName: countryName.trim(),
+    countryAlpha2: countryAlpha2?.trim(),
+    currencyAlpha3: currencyAlpha3?.trim(),
+    id: id?.trim(),
+    exchangeRateToUSD,
+    exchangeRateLastUpdate: normalizedRateDate
+  };
+}
+
+function parseUserPref(argsText: string): UserPrefCommand {
+  const entries = Object.entries(parseArgs(argsText));
+  if (entries.length === 0) {
+    throw new CommandError("/userpref requires at least one key=value pair.");
+  }
+  if (entries.length > 1) {
+    throw new CommandError("/userpref accepts exactly one key=value pair.");
+  }
+  const [key, value] = entries[0];
+  if (!key?.trim()) {
+    throw new CommandError("/userpref key cannot be empty.");
+  }
+  return { type: "userpref", key: key.trim(), value };
 }
 
 function parseEdit(argsText: string): EditCommand {
@@ -212,16 +304,6 @@ function parseDelete(argsText: string): DeleteCommand {
   return { type: "delete", uid };
 }
 
-function parseMoveDate(argsText: string): MoveDateCommand {
-  const fields = parseArgs(argsText);
-  const from = fields.from?.trim();
-  const to = fields.to?.trim();
-  if (!from || !to) {
-    throw new CommandError("/movedate requires from and to date values.");
-  }
-  return { type: "movedate", from, to };
-}
-
 function parseUndo(argsText: string): UndoCommand {
   const count = parseUndoRedoCount(argsText, "/undo");
   return { type: "undo", count };
@@ -230,6 +312,83 @@ function parseUndo(argsText: string): UndoCommand {
 function parseRedo(argsText: string): RedoCommand {
   const count = parseUndoRedoCount(argsText, "/redo");
   return { type: "redo", count };
+}
+
+function parseMark(argsText: string): MarkCommand {
+  const args = parseArgs(argsText);
+  const markType = (args.type?.toLowerCase() ?? "activities") as "activities" | "dates";
+  
+  if (markType !== "activities" && markType !== "dates") {
+    throw new CommandError("/mark type must be \"activities\" or \"dates\".");
+  }
+  
+  const addStr = args.add ?? "";
+  const removeStr = args.remove ?? "";
+  
+  if (!addStr && !removeStr) {
+    throw new CommandError("/mark requires at least one of add=\"...\" or remove=\"...\".");
+  }
+  
+  const add = addStr ? addStr.split(/\s+/).filter(Boolean) : [];
+  const remove = removeStr ? removeStr.split(/\s+/).filter(Boolean) : [];
+  
+  return { type: "mark", markType, add, remove };
+}
+
+function parseIntent(argsText: string): IntentCommand {
+  const args = parseArgs(argsText);
+  const what = args.what?.trim();
+  if (!what) {
+    throw new CommandError("/intent requires what=\"...\"");
+  }
+  return { type: "intent", what };
+}
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseMoveDay(argsText: string): MoveDayCommand {
+  const args = parseArgs(argsText);
+  const from = args.from?.trim();
+  const to = args.to?.trim();
+  
+  if (!from) {
+    throw new CommandError("/moveday requires from=\"YYYY-MM-DD\"");
+  }
+  if (!to) {
+    throw new CommandError("/moveday requires to=\"YYYY-MM-DD\"");
+  }
+  if (!DATE_PATTERN.test(from)) {
+    throw new CommandError(`Invalid from date "${from}". Must be YYYY-MM-DD format.`);
+  }
+  if (!DATE_PATTERN.test(to)) {
+    throw new CommandError(`Invalid to date "${to}". Must be YYYY-MM-DD format.`);
+  }
+  
+  return { type: "moveday", from, to };
+}
+
+function parseInsertDay(argsText: string): InsertDayCommand {
+  const args = parseArgs(argsText);
+  const after = args.after?.trim();
+  if (!after) {
+    throw new CommandError("/insertday requires after=\"YYYY-MM-DD\"");
+  }
+  if (!DATE_PATTERN.test(after)) {
+    throw new CommandError(`Invalid date "${after}". Must be YYYY-MM-DD format.`);
+  }
+  return { type: "insertday", after };
+}
+
+function parseRemoveDay(argsText: string): RemoveDayCommand {
+  const args = parseArgs(argsText);
+  const date = args.date?.trim();
+  if (!date) {
+    throw new CommandError("/removeday requires date=\"YYYY-MM-DD\"");
+  }
+  if (!DATE_PATTERN.test(date)) {
+    throw new CommandError(`Invalid date "${date}". Must be YYYY-MM-DD format.`);
+  }
+  return { type: "removeday", date };
 }
 
 function parseUndoRedoCount(argsText: string, keyword: string): number {
@@ -368,14 +527,39 @@ export function formatCanonicalCommand(command: ParsedCommand, context?: Canonic
       return command.target ? parts("/model", formatArg("target", command.target)) : "/model";
     case "websearch":
       return parts("/websearch", formatArg("query", command.query));
-    case "info":
-      return command.topic ? parts("/info", formatArg("topic", command.topic)) : "/info";
-    case "movedate":
-      return parts("/movedate", formatArg("from", command.from), formatArg("to", command.to));
+    case "addcountry":
+      return parts(
+        "/addcountry",
+        formatArg("countryName", command.countryName),
+        formatArg("countryAlpha2", command.countryAlpha2),
+        formatArg("currencyAlpha3", command.currencyAlpha3),
+        formatArg("id", command.id),
+        formatArg("exchangeRateToUSD", command.exchangeRateToUSD),
+        formatArg("exchangeRateLastUpdate", command.exchangeRateLastUpdate)
+      );
+    case "refreshcountries":
+      return "/refreshcountries";
+    case "userpref":
+      return parts("/userpref", formatArg(command.key, command.value));
     case "undo":
       return parts("/undo", formatArg("count", command.count));
     case "redo":
       return parts("/redo", formatArg("count", command.count));
+    case "mark":
+      return parts(
+        "/mark",
+        formatArg("type", command.markType),
+        command.add.length > 0 ? formatArg("add", command.add.join(" ")) : null,
+        command.remove.length > 0 ? formatArg("remove", command.remove.join(" ")) : null
+      );
+    case "intent":
+      return parts("/intent", formatArg("what", command.what));
+    case "moveday":
+      return parts("/moveday", formatArg("from", command.from), formatArg("to", command.to));
+    case "insertday":
+      return parts("/insertday", formatArg("after", command.after));
+    case "removeday":
+      return parts("/removeday", formatArg("date", command.date));
     default:
       return "/help";
   }

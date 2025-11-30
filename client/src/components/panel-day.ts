@@ -1,7 +1,9 @@
 import { LitElement, PropertyValues, css, html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { customElement, property, state } from "lit/decorators.js";
+import type { Activity } from "../types";
 import type { DayEntry } from "../view/view-day";
+import { renderDayIndicatorSlots, renderActivityIndicatorSlots, indicatorSlotStyles } from "./indicators";
 
 type PlanPanelElement = HTMLElement & {
   getDateInfoAtPoint?: (clientX: number, clientY: number) => { key: string; display: string } | null;
@@ -12,6 +14,19 @@ export class PanelDay extends LitElement {
   @property({ type: String }) title = "Day";
   @property({ attribute: false }) items: DayEntry[] = [];
   @property({ type: String }) focusedUid: string | null = null;
+  // Indicator slot properties
+  @property({ type: Number }) flightCount = 0;
+  @property({ type: Boolean }) flightBooked = false;
+  @property({ type: Boolean }) hasRentalCar = false;
+  @property({ type: Boolean }) rentalCarBooked = false;
+  @property({ type: String }) lodgingStatus: "none" | "unbooked" | "booked" | "multiple" = "none";
+  @property({ type: String }) lodgingCity?: string;
+  @property({ type: Number }) mealCount = 0;
+  @property({ type: Number }) mealsNeedingReservation = 0;
+  @property({ type: Boolean }) hasDateMismatchIssue = false;
+  @property({ type: Boolean }) issueNoTransportToLodging = false;
+  @property({ type: Boolean }) issueNoTransportToFlight = false;
+  @property({ attribute: false }) mismatchedUids: Set<string> = new Set();
   @state() private draggingUid: string | null = null;
   @state() private dropTargetIndex: number | null = null;
 
@@ -37,11 +52,86 @@ export class PanelDay extends LitElement {
       color: #0f172a;
     }
 
-    .title {
+    .title-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
       margin: 0 0 0.5rem 0;
+    }
+
+    .title {
+      margin: 0;
       font-size: 1.15rem;
       font-weight: 600;
       color: #0f172a;
+    }
+
+    /* Indicator slots - right-justified, sized proportional to title */
+    .indicator-slots {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .indicator-slot {
+      width: 1em;
+      height: 1em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.15rem;
+    }
+
+    .indicator-slot svg {
+      width: 1em;
+      height: 1em;
+    }
+
+    /* Icon colors by status */
+    .indicator-slot.status-green svg {
+      color: #22c55e;
+    }
+
+    .indicator-slot.status-yellow svg {
+      color: #eab308;
+    }
+
+    .indicator-slot.status-red svg {
+      color: #ef4444;
+    }
+
+    .indicator-slot.status-purple svg {
+      color: #a855f7;
+    }
+
+    .indicator-slot.status-black svg {
+      color: #0f172a;
+    }
+
+    .indicator-slot.status-hidden {
+      visibility: hidden;
+    }
+
+    /* Activity row indicator slots - right-justified, smaller than title */
+    .activity-indicator-slots {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .activity-indicator-slots .indicator-slot {
+      width: 14px;
+      height: 14px;
+      font-size: 0.85rem;
+    }
+
+    .activity-indicator-slots .indicator-slot svg {
+      width: 12px;
+      height: 12px;
     }
 
     .empty {
@@ -86,6 +176,11 @@ export class PanelDay extends LitElement {
     .activity.focused {
       background: #e0e7ff;
       border-color: #818cf8;
+    }
+
+    .activity.marked {
+      background: #e8f8e5;
+      border-color: #bbf7d0;
     }
 
     .activity.drop-target {
@@ -167,7 +262,10 @@ export class PanelDay extends LitElement {
 
   render() {
     return html`
-      <h3 class="title">${this.title}</h3>
+      <div class="title-row">
+        <h3 class="title">${this.title}</h3>
+        ${this.renderIndicatorSlots()}
+      </div>
       <div class="list">
         ${this.items.map((item, index) =>
           item.isPlaceholder
@@ -221,14 +319,14 @@ export class PanelDay extends LitElement {
     }
     const isFocused = this.focusedUid === activity.uid;
     return html`<div
-      class=${classMap(this.buildActivityClasses({ index, uid: activity.uid, focused: isFocused }))}
+      class=${classMap(this.buildActivityClasses({ index, uid: activity.uid, focused: isFocused, marked: item.isMarked }))}
       data-index=${index}
       data-time=${item.time}
       data-uid=${activity.uid}
       tabindex="0"
       @mouseenter=${() => this.emitActivityHover(activity)}
       @focus=${() => this.emitActivityHover(activity)}
-      @click=${() => this.emitActivityFocus(activity)}
+      @click=${(event: MouseEvent) => this.handleActivityClick(event, item, activity, index)}
       @keydown=${(event: KeyboardEvent) => this.handleKey(event, activity)}
       aria-selected=${isFocused}
     >
@@ -242,14 +340,51 @@ export class PanelDay extends LitElement {
       </span>
       <span class="time">${item.displayTime}</span>
       <span class="label">${item.label}</span>
+      ${this.renderActivityIndicators(activity)}
     </div>`;
   }
 
-  private buildActivityClasses(options: { index: number; uid?: string | null; focused?: boolean; placeholder?: boolean }) {
+  private handleActivityClick(event: MouseEvent, item: DayEntry, activity: Activity, index: number) {
+    if (event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.dispatchEvent(
+        new CustomEvent("day-activity-range-mark", {
+          detail: { uid: activity.uid, index },
+          bubbles: true,
+          composed: true
+        })
+      );
+      return;
+    }
+
+    if (event.ctrlKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.dispatchEvent(
+        new CustomEvent("day-activity-toggle-mark", {
+          detail: { uid: activity.uid, mark: !item.isMarked },
+          bubbles: true,
+          composed: true
+        })
+      );
+      return;
+    }
+    this.emitActivityFocus(activity);
+  }
+
+  private buildActivityClasses(options: {
+    index: number;
+    uid?: string | null;
+    focused?: boolean;
+    placeholder?: boolean;
+    marked?: boolean;
+  }) {
     return {
       activity: true,
       placeholder: Boolean(options.placeholder),
       focused: Boolean(options.focused),
+      marked: Boolean(options.marked),
       "drop-target": this.dropTargetIndex === options.index,
       "dragging-source": Boolean(options.uid && this.draggingUid === options.uid)
     };
@@ -267,6 +402,105 @@ export class PanelDay extends LitElement {
     >
       <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
     </svg>`;
+  }
+
+  // --- Indicator slot rendering (uses shared indicators) ---
+  private renderIndicatorSlots() {
+    return html`<div class="indicator-slots">
+      ${renderDayIndicatorSlots({
+        flightCount: this.flightCount,
+        flightBooked: this.flightBooked,
+        hasRentalCar: this.hasRentalCar,
+        rentalCarBooked: this.rentalCarBooked,
+        lodgingStatus: this.lodgingStatus,
+        lodgingCity: this.lodgingCity,
+        mealCount: this.mealCount,
+        mealsNeedingReservation: this.mealsNeedingReservation,
+        hasDateMismatchIssue: this.hasDateMismatchIssue,
+        issueNoTransportToLodging: this.issueNoTransportToLodging,
+        issueNoTransportToFlight: this.issueNoTransportToFlight,
+      })}
+    </div>`;
+  }
+
+  /**
+   * Check if a flight or lodging activity lacks transport before its scheduled time.
+   * For flights, we need transport AFTER any earlier flight on the same day.
+   */
+  private checkNoTransportBefore(activity: Activity): boolean {
+    const activityType = activity.activityType;
+    if (activityType !== "flight" && activityType !== "lodging") {
+      return false;
+    }
+    
+    const activityTime = activity.time;
+    if (!activityTime || !/^\d{2}:\d{2}/.test(activityTime)) {
+      return false; // No time specified
+    }
+    
+    // If there's a booked rental car for this day, transport is covered
+    if (this.hasRentalCar && this.rentalCarBooked) {
+      return false;
+    }
+    
+    // Get all transport times, sorted
+    const transportTimes: string[] = [];
+    for (const item of this.items) {
+      const other = item.activity;
+      if (!other) continue;
+      if (other.activityType !== "transport") continue;
+      const transportTime = other.time;
+      if (transportTime && /^\d{2}:\d{2}/.test(transportTime)) {
+        transportTimes.push(transportTime);
+      }
+    }
+    transportTimes.sort();
+    
+    if (activityType === "flight") {
+      // For flights, find the previous flight time (if any)
+      let previousFlightTime = "00:00";
+      for (const item of this.items) {
+        const other = item.activity;
+        if (!other || other.uid === activity.uid) continue;
+        if (other.activityType !== "flight") continue;
+        const otherTime = other.time;
+        if (otherTime && /^\d{2}:\d{2}/.test(otherTime) && otherTime < activityTime) {
+          if (otherTime > previousFlightTime) {
+            previousFlightTime = otherTime;
+          }
+        }
+      }
+      
+      // Need transport between previousFlightTime and this flight
+      if (previousFlightTime === "00:00") {
+        // First flight of day - just need transport before it
+        return !transportTimes.some(t => t < activityTime);
+      } else {
+        // Subsequent flight - need transport AFTER the previous flight and BEFORE this one
+        return !transportTimes.some(t => t > previousFlightTime && t < activityTime);
+      }
+    } else {
+      // Lodging - just need any transport before it
+      return !transportTimes.some(t => t < activityTime);
+    }
+  }
+
+  // --- Activity row indicator rendering (uses shared indicators) ---
+  private renderActivityIndicators(activity: Activity) {
+    const isBooked = activity.status === "booked" || activity.status === "completed";
+    const hasMismatch = this.mismatchedUids.has(activity.uid);
+    const reservationNeeded = (activity as unknown as Record<string, unknown>).reservationNeeded === true;
+    const noTransportBefore = this.checkNoTransportBefore(activity);
+
+    return html`<div class="activity-indicator-slots">
+      ${renderActivityIndicatorSlots({
+        activityType: activity.activityType,
+        isBooked,
+        hasMismatch,
+        reservationNeeded,
+        noTransportBefore,
+      })}
+    </div>`;
   }
 
   private handleDragPointerDown(event: PointerEvent, item: DayEntry) {

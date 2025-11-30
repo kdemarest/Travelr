@@ -8,7 +8,7 @@ Personal travel planner.
 Backend: NodeJS + TypeScript.
 Frontend: TypeScript + lit web components.
 Environment: VSCode and Chrome, plus nodemon to restart the server as needed
-Storage: bare files in a data/ directory
+Storage: bare files in a trips/ directory
 
 Persistent storage: a journal file named "<tripName>.json".
 The journal contains ONLY slash-commands, one per line.
@@ -57,7 +57,7 @@ Rules:
 
 3. JOURNAL AND COMMANDS
 
-Journal file: data/<tripName>.json  
+Journal file: trips/<tripName>.travlrjournal  
 Format: plain UTF-8 text.  
 One slash-command per line.
 Replay order is the order of truth.
@@ -143,7 +143,7 @@ Commands:
   /renormalize
 
   Effect:
-  Replays every journal in `data/`, emits normalized `.tmp` copies alongside the originals, and logs any skipped lines. The chatbot must never issue this command.
+  Replays every journal in `trips/`, emits normalized `.tmp` copies alongside the originals, and logs any skipped lines. The chatbot must never issue this command.
 
 ---------------------------------
 

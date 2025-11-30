@@ -29,6 +29,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@strychnine-labs/windows-credential-manager": "^1.0.0-beta.1"
+    "@strychnine-labs/windows-credential-manager": "^1.0.0-beta.1",
+    "marked": "^17.0.1"
   }
 }

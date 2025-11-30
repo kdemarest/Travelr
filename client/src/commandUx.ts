@@ -1,75 +1,99 @@
 import type { TripModel } from "./types";
 import { normalizeUserDate } from "./ux-date";
 import { normalizeUserTime } from "./ux-time";
-
-const KNOWN_COMMANDS = new Set([
-  "/newtrip",
-  "/add",
-  "/edit",
-  "/delete",
-  "/help",
-  "/trip",
-  "/model",
-  "/movedate",
-  "/undo",
-  "/redo",
-  "/websearch",
-  "/info"
-]);
+import { parseCanonicalCommand } from "./command-parse";
+import { parseChatPieces, isCommandPiece, reconstructText, type ChatPiece } from "./chat-pieces";
 
 export interface CommandProcessingResult {
   ok: boolean;
-  executedCommands: number;
-  skipped: boolean;
   payload?: CommandResponse;
 }
 
 interface CommandResponse {
-  ok?: boolean;
   executedCommands?: number;
   message?: string;
   error?: string;
   model?: TripModel;
   query?: string;
   searchResults?: string[];
+  chatPieces?: Array<{ kind: string; piece: string }>;
+  // GUID for polling chatbot response
+  pendingChatbot?: string;
+}
+
+interface ChatbotPollResponse {
+  ok: boolean;
+  text?: string;
+  model?: string;
+  executedCommands?: number;
+  updatedModel?: TripModel;
+  chatbotActivityMarks?: string[];
+  chatbotDateMarks?: string[];
+  pendingChatbot?: string;
+  error?: string;
 }
 
 export interface CommandUxOptions {
   text: string;
   currentTripId: string;
-  focusedUid: string | null;
-  appendMessage: (message: string, options?: { isUser?: boolean; conversationText?: string }) => void;
+  focusSummary: { focusedDate: string | null; focusedActivityUid: string | null };
+  markedActivities?: string[];
+  markedDates?: string[];
+  appendMessage: (message: string, options?: { isUser?: boolean; pending?: boolean }) => string;
+  updateMessage: (id: string, text: string, options?: { pending?: boolean }) => void;
   setSending: (sending: boolean) => void;
   rememberTripModel: (model: TripModel) => void;
+  // Called when chatbot updates marks (only arrays that changed are provided)
+  updateMarks?: (activities: string[] | undefined, dates: string[] | undefined) => void;
+  // Check if user requested stop
+  shouldStop?: () => boolean;
   echoCommands?: boolean;
 }
 
 export async function processUserCommand(options: CommandUxOptions): Promise<CommandProcessingResult> {
-  const preparedText = prepareOutgoingText(options.text, options.focusedUid);
+  const preparedText = prepareOutgoingText(options.text);
+  const pieces = parseChatPieces(preparedText);
+  const hasJournalableCommands = pieces.some((p) => isJournalableCommand(p));
+  
+  // Echo user input - pending if it has journalable commands that need server confirmation
+  let pendingMessageId: string | null = null;
   if (options.echoCommands ?? true) {
-    options.appendMessage(preparedText, {
-      isUser: true,
-      conversationText: `User: ${preparedText}`
+    pendingMessageId = options.appendMessage(preparedText, { 
+      isUser: true, 
+      pending: hasJournalableCommands 
     });
   }
-  const hasSlashCommands = containsSlashCommand(preparedText);
-  if (!hasSlashCommands) {
-    return { ok: true, executedCommands: 0, skipped: true };
-  }
-
+  
   options.setSending(true);
 
   try {
+    const textForServer = reconstructText(pieces);
     const response = await fetch(`/api/trip/${options.currentTripId}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: preparedText })
+      body: JSON.stringify({ 
+        text: textForServer,
+        focusSummary: options.focusSummary,
+        markedActivities: options.markedActivities,
+        markedDates: options.markedDates
+      })
     });
     const payload = (await response.json().catch(() => ({}))) as CommandResponse;
 
     if (!response.ok) {
+      if (pendingMessageId) {
+        options.updateMessage(pendingMessageId, preparedText, { pending: false });
+      }
       options.appendMessage(`✗ ${payload.error ?? response.statusText}`);
-      return { ok: false, executedCommands: 0, skipped: false, payload };
+      return { ok: false, payload };
+    }
+
+    // Update the pending message with authoritative text from server
+    if (pendingMessageId) {
+      const finalText = payload.chatPieces ?
+	  	reconstructText(payload.chatPieces) :
+		preparedText;
+      options.updateMessage(pendingMessageId, finalText, { pending: false });
     }
 
     if (payload.message && !payload.searchResults) {
@@ -80,59 +104,94 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
       options.rememberTripModel(payload.model);
     }
 
-    const executed = payload.executedCommands ?? 0;
-    if (executed > 0) {
-      options.appendMessage(`✓ Executed ${executed} command(s)`);
+    const totalExecuted = payload.executedCommands ?? 0;
+    if (totalExecuted > 0) {
+      options.appendMessage(`✓ Executed ${totalExecuted} command(s)`);
     }
-    return { ok: true, executedCommands: executed, skipped: false, payload };
+
+    // Poll for chatbot responses if a task was queued
+    if (payload.pendingChatbot) {
+      await pollChatbotResponses(payload.pendingChatbot, options);
+    }
+
+    return { ok: true, payload };
   } catch (error) {
+    if (pendingMessageId) {
+      options.updateMessage(pendingMessageId, preparedText, { pending: false });
+    }
     const message = error instanceof Error ? error.message : String(error);
     options.appendMessage(`Network error: ${message}`);
-    return { ok: false, executedCommands: 0, skipped: false };
+    return { ok: false };
   } finally {
     options.setSending(false);
   }
 }
 
-export function prepareOutgoingText(input: string, focusedUid: string | null, referenceDate = new Date()): string {
+/**
+ * Poll the server for chatbot responses until complete or stopped
+ */
+async function pollChatbotResponses(
+  guid: string,
+  options: Pick<CommandUxOptions, 'appendMessage' | 'rememberTripModel' | 'updateMarks' | 'shouldStop'>
+): Promise<void> {
+  let currentGuid: string | null = guid;
+  
+  while (currentGuid) {
+    // Check if user requested stop
+    if (options.shouldStop?.()) {
+      options.appendMessage("ℹ Chatbot response cancelled.");
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/chain/${currentGuid}`);
+      const result = (await response.json().catch(() => ({}))) as ChatbotPollResponse;
+      
+      if (!response.ok) {
+        options.appendMessage(`Chatbot error: ${result.error ?? response.statusText}`);
+        return;
+      }
+      
+      if (result.error) {
+        options.appendMessage(`Chatbot error: ${result.error}`);
+        return;
+      }
+      
+      // Display GPT response
+      if (result.text) {
+        const modelLabel = result.model ?? "chat";
+        options.appendMessage(`GPT (${modelLabel}): ${result.text}`);
+      }
+      
+      // Update model if GPT executed commands
+      if (result.updatedModel) {
+        options.rememberTripModel(result.updatedModel);
+      }
+      
+      // Update marks if chatbot executed /mark commands
+      if (result.chatbotActivityMarks !== undefined || result.chatbotDateMarks !== undefined) {
+        options.updateMarks?.(result.chatbotActivityMarks, result.chatbotDateMarks);
+      }
+      
+      if (result.executedCommands && result.executedCommands > 0) {
+        options.appendMessage(`✓ Chatbot executed ${result.executedCommands} command(s)`);
+      }
+      
+      // Continue polling if there's a follow-up
+      currentGuid = result.pendingChatbot ?? null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      options.appendMessage(`Network error polling chatbot: ${message}`);
+      return;
+    }
+  }
+}
+export function prepareOutgoingText(input: string, referenceDate = new Date()): string {
   return input
     .split(/\r?\n/)
-    .map((line) => convertUnknownCommandToEdit(line, focusedUid))
-    .map((line) => injectFocusedUidIntoEdit(line, focusedUid))
     .map((line) => normalizeDateFields(line, referenceDate))
     .map((line) => normalizeTimeFields(line))
     .join("\n");
-}
-
-function convertUnknownCommandToEdit(line: string, focusedUid: string | null): string {
-  if (!focusedUid) {
-    return line;
-  }
-
-  const trimmed = line.trimStart();
-  if (!trimmed.startsWith("/")) {
-    return line;
-  }
-
-  const leadingWhitespace = line.slice(0, line.length - trimmed.length);
-  const spaceIndex = trimmed.indexOf(" ");
-  const keyword = (spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex)).toLowerCase();
-  if (KNOWN_COMMANDS.has(keyword)) {
-    return line;
-  }
-
-  const fieldName = keyword.slice(1);
-  if (!fieldName) {
-    return line;
-  }
-
-  const rawValue = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim();
-  if (!rawValue) {
-    return line;
-  }
-
-  const encodedValue = JSON.stringify(rawValue);
-  return `${leadingWhitespace}/edit ${focusedUid} ${fieldName}=${encodedValue}`;
 }
 
 const DATE_ARG_PATTERN = /\bdate=("(?:\\.|[^"\\])*"|[^\s]+)/gi;
@@ -190,56 +249,31 @@ function decodeArgumentValue(value: string): string | null {
   return value;
 }
 
-export function injectFocusedUidIntoEdit(line: string, focusedUid: string | null): string {
-  if (!focusedUid) {
-    return line;
-  }
-
-  const trimmed = line.trimStart();
-  if (!trimmed.startsWith("/edit")) {
-    return line;
-  }
-
-  const leadingWhitespaceLength = line.length - trimmed.length;
-  const leadingWhitespace = line.slice(0, leadingWhitespaceLength);
-  const afterKeyword = trimmed.slice("/edit".length);
-  if (/(^|\s)uid=/.test(afterKeyword)) {
-    return line;
-  }
-
-  const rest = afterKeyword.trimStart();
-  if (rest) {
-    const firstToken = rest.split(/\s+/)[0];
-    if (firstToken && !firstToken.includes("=")) {
-      return line;
-    }
-  }
-
-  const spacer = rest.length ? " " : "";
-  return `${leadingWhitespace}/edit ${focusedUid}${spacer}${rest}`;
-}
-
 export function extractSlashCommandLines(text: string): string[] {
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .map((line) => line.trimStart())
-    .filter((line) => line.startsWith("/"))
-    .filter((line) => line.length > 0);
-  if (lines.length) {
-    console.log("extractSlashCommandLines detected commands", {
-      commandCount: lines.length,
-      preview: lines.slice(0, 5)
-    });
-  } else {
-    console.log("extractSlashCommandLines found no commands", {
-      snippet: text.slice(0, 120)
-    });
-  }
-  return lines;
+  return parseChatPieces(text)
+    .filter(isCommandPiece)
+    .map((p) => p.piece);
 }
 
-function containsSlashCommand(text: string): boolean {
-  return extractSlashCommandLines(text).length > 0;
+const JOURNALABLE_COMMANDS = new Set([
+  "/add",
+  "/edit",
+  "/delete",
+  "/moveday",
+  "/insertday",
+  "/removeday",
+  "/undo",
+  "/redo",
+  "/addcountry"
+]);
+
+function isJournalableCommand(piece: ChatPiece): boolean {
+  if (!isCommandPiece(piece)) {
+    return false;
+  }
+  const parsed = parseCanonicalCommand(piece.piece);
+  if (!parsed) {
+    return false;
+  }
+  return JOURNALABLE_COMMANDS.has(parsed.keyword.toLowerCase());
 }

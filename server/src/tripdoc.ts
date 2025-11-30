@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseCommand, ParsedCommand } from "./command.js";
 import { applyTripCommand } from "./reducer.js";
 import { TripModel } from "./types.js";
+import { ensureDefaultCountry } from "./country-defaults.js";
 
 export class TripDocService {
   constructor(private readonly dataDir: string) {}
@@ -20,19 +21,20 @@ export class TripDocService {
   }
 
   async rebuildModel(tripName: string): Promise<TripModel> {
-    const baseModel: TripModel = { tripName, tripId: tripName, activities: [] };
+    const baseModel: TripModel = ensureDefaultCountry({ tripName, tripId: tripName, activities: [], countries: [] });
     const entries = await this.readJournalEntries(tripName);
     if (entries.length === 0) {
       return baseModel;
     }
     const timeline = computeJournalTimeline(entries);
     const activeEntries = timeline.activeIndexes.map((entryIndex) => entries[entryIndex]);
-    return activeEntries.reduce((model, entry) => applyTripCommand(model, entry.command), baseModel);
+    const reduced = activeEntries.reduce((model, entry) => applyTripCommand(model, entry.command), baseModel);
+    return ensureDefaultCountry(reduced);
   }
 
   async applyCommand(tripName: string, command: ParsedCommand): Promise<TripModel> {
     if (command.type === "newtrip") {
-      return { tripName: command.tripId, tripId: command.tripId, activities: [] };
+      return ensureDefaultCountry({ tripName: command.tripId, tripId: command.tripId, activities: [], countries: [] });
     }
     return this.rebuildModel(tripName);
   }
@@ -48,6 +50,10 @@ export class TripDocService {
   async getJournalTimeline(tripName: string): Promise<JournalTimeline> {
     const entries = await this.readJournalEntries(tripName);
     return computeJournalTimeline(entries);
+  }
+
+  async getJournalEntries(tripName: string): Promise<JournalEntry[]> {
+    return this.readJournalEntries(tripName);
   }
 
   private async readJournalEntries(tripName: string): Promise<JournalEntry[]> {
@@ -71,6 +77,7 @@ export interface JournalEntry {
 
 export interface JournalTimeline {
   activeIndexes: number[];
+  orderedIndexes: number[];
   head: number;
   total: number;
 }
@@ -102,8 +109,9 @@ export function computeJournalTimeline(entries: JournalEntry[]): JournalTimeline
     }
   });
 
-  const activeIndexes = head === 0 ? [] : order.slice(0, head);
-  return { activeIndexes, head, total: order.length };
+  const orderedIndexes = order.slice();
+  const activeIndexes = head === 0 ? [] : orderedIndexes.slice(0, head);
+  return { activeIndexes, orderedIndexes, head, total: orderedIndexes.length };
 }
 
 export function resolveActiveJournalEntries(entries: JournalEntry[]): JournalEntry[] {

@@ -6,12 +6,18 @@ export type DayEntry = {
   label: string;
   activity: Activity | null;
   isPlaceholder: boolean;
+  isMarked: boolean;
 };
 
-const START_HOUR = 6;
+const START_HOUR = 0;
 const END_HOUR = 23;
 
-export function buildDayItems(activities: Activity[], describeActivity: (activity: Activity) => string): DayEntry[] {
+export function buildDayItems(
+  activities: Activity[],
+  describeActivity: (activity: Activity) => string,
+  markedUids?: Set<string>
+): DayEntry[] {
+  const markedSet = markedUids ?? new Set<string>();
   const sorted = activities.map((activity, index) => {
     const sortValue = getTimeSortValue(activity.time);
     return { activity, index, sortValue };
@@ -52,7 +58,8 @@ export function buildDayItems(activities: Activity[], describeActivity: (activit
         displayTime: resolveDisplayTime(entry.activity, fallbackTime),
         label: describeActivity(entry.activity),
         activity: entry.activity,
-        isPlaceholder: false
+        isPlaceholder: false,
+        isMarked: isMarked(entry.activity, markedSet)
       });
     });
   }
@@ -66,7 +73,8 @@ export function buildDayItems(activities: Activity[], describeActivity: (activit
         displayTime: hourLabel,
         label: "",
         activity: null,
-        isPlaceholder: true
+        isPlaceholder: true,
+        isMarked: false
       });
       continue;
     }
@@ -79,7 +87,8 @@ export function buildDayItems(activities: Activity[], describeActivity: (activit
           displayTime: resolveDisplayTime(entry.activity, normalizedTime),
           label: describeActivity(entry.activity),
           activity: entry.activity,
-          isPlaceholder: false
+          isPlaceholder: false,
+          isMarked: isMarked(entry.activity, markedSet)
         });
       });
   }
@@ -96,12 +105,20 @@ export function buildDayItems(activities: Activity[], describeActivity: (activit
         displayTime: resolveDisplayTime(entry.activity, normalizedTime),
         label: describeActivity(entry.activity),
         activity: entry.activity,
-        isPlaceholder: false
+        isPlaceholder: false,
+        isMarked: isMarked(entry.activity, markedSet)
       });
     });
   }
 
   return items;
+}
+
+function isMarked(activity: Activity | null, markedSet: Set<string>): boolean {
+  if (!activity?.uid) {
+    return false;
+  }
+  return markedSet.has(activity.uid);
 }
 
 function getTimeSortValue(time?: string | null): number | null {
