@@ -19,6 +19,10 @@ import { cmdRenormalize } from "./cmd-renormalize.js";
 import { ensureCountryMetadata } from "./country.js";
 import { enqueueGptTask, type ChatbotContext } from "./chatbot.js";
 import { recordRequest } from "./gpt.js";
+import { checkIsAdmin, validateAuthKey } from "./auth.js";
+
+// Commands that require admin access
+const ADMIN_COMMANDS = new Set(["model", "renormalize", "refreshcountries"]);
 
 type TimelineState = { head: number; total: number; orderedIndexes: number[]; entries: JournalEntry[] };
 
@@ -34,6 +38,7 @@ interface CommandContext {
   lastModel: TripModel | null;
   lastModelTripName: string | null;
   executed: number;
+  isAdmin: boolean;
 }
 
 // Result from processing a single command
@@ -340,6 +345,12 @@ async function processCommand(
 ): Promise<CommandResult> {
   // Determine target trip
   const quickParsed = parseCommand(normalizedLine);
+  
+  // Check if this is an admin-only command
+  if (ADMIN_COMMANDS.has(quickParsed.type) && !ctx.isAdmin) {
+    throw new CommandError(`The '${quickParsed.type}' command requires admin access.`);
+  }
+  
   const targetTrip = quickParsed.type === "newtrip" ? quickParsed.tripId : ctx.currentTripName;
   if (quickParsed.type === "newtrip") {
     ctx.currentTripName = quickParsed.tripId;
@@ -428,6 +439,13 @@ async function executeCommandBatch(
     }
 
     try {
+      // Check if user is admin (for admin-only commands)
+      const user = req.headers["x-auth-user"] as string;
+      const deviceId = req.headers["x-auth-device"] as string;
+      const authKey = req.headers["x-auth-key"] as string;
+      const validUser = validateAuthKey(user, deviceId, authKey);
+      const isAdmin = validUser ? checkIsAdmin(validUser) : false;
+
       // Initialize shared context
       const ctx: CommandContext = {
         tripDocService,
@@ -439,7 +457,8 @@ async function executeCommandBatch(
         infoMessages: [],
         lastModel: null,
         lastModelTripName: null,
-        executed: 0
+        executed: 0,
+        isAdmin
       };
 
       const nonJournalableHandlers = createNonJournalableHandlers(ctx);

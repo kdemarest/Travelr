@@ -20,6 +20,7 @@ import {
   loadFocusedActivityUid,
   clearFocusedActivityUid
 } from "./storage";
+import { checkAuthRequired, tryAutoLogin, login, logout, authFetch } from "./auth";
 import "./components/panel-plan";
 import "./components/panel-day";
 import "./components/panel-activity";
@@ -55,6 +56,11 @@ export class TripApp extends LitElement {
   @state() private dayDragPlanState: { uid: string; date: string | null } | null = null;
   @state() private markedActivityIds: string[] = [];
   @state() private markedDateKeys: string[] = [];
+  // Auth state
+  @state() private authRequired = false;
+  @state() private authChecking = true;
+  @state() private authUser: string | null = null;
+  @state() private authError: string | null = null;
   private attemptedAutoRestore = false;
   private pendingNewActivityPrevUids: Set<string> | null = null;
   private logEntryCounter = 0;
@@ -73,6 +79,107 @@ export class TripApp extends LitElement {
       font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       color: #0f172a;
       background: #f8fafc;
+    }
+
+    .auth-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-size: 1.2rem;
+      color: #64748b;
+    }
+
+    .auth-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    .auth-form {
+      background: white;
+      padding: 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      width: 320px;
+    }
+
+    .auth-form h2 {
+      margin: 0 0 1.5rem 0;
+      color: #1e293b;
+    }
+
+    .auth-form label {
+      display: block;
+      margin-bottom: 0.5rem;
+      color: #475569;
+      font-size: 0.875rem;
+    }
+
+    .auth-form input {
+      width: 100%;
+      padding: 0.75rem;
+      margin-bottom: 1rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      font-size: 1rem;
+      box-sizing: border-box;
+    }
+
+    .auth-form input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+
+    .auth-form button {
+      width: 100%;
+      padding: 0.75rem;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    .auth-form button:hover {
+      background: #2563eb;
+    }
+
+    .auth-error {
+      color: #dc2626;
+      margin-bottom: 1rem;
+      padding: 0.5rem;
+      background: #fef2f2;
+      border-radius: 4px;
+      font-size: 0.875rem;
+    }
+
+    .auth-bar {
+      position: absolute;
+      top: 0.5rem;
+      right: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.875rem;
+      color: #64748b;
+      z-index: 100;
+    }
+
+    .auth-bar button {
+      padding: 0.25rem 0.75rem;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    .auth-bar button:hover {
+      background: #e2e8f0;
     }
 
     .layout {
@@ -133,9 +240,58 @@ export class TripApp extends LitElement {
     }
   `;
 
+  private renderLogin() {
+    return html`
+      <div class="auth-container">
+        <form class="auth-form" @submit=${this.handleLoginSubmit}>
+          <h2>Travelr Login</h2>
+          ${this.authError ? html`<div class="auth-error">${this.authError}</div>` : ""}
+          <label for="user">Username</label>
+          <input type="text" id="user" name="user" required autocomplete="username" />
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password" />
+          <button type="submit">Login</button>
+        </form>
+      </div>
+    `;
+  }
+
+  private async handleLoginSubmit(e: Event) {
+    e.preventDefault();
+    const form = e.target as HTMLFormElement;
+    const formData = new FormData(form);
+    const user = formData.get("user") as string;
+    const password = formData.get("password") as string;
+    
+    this.authError = null;
+    const result = await login(user, password);
+    
+    if (result.ok) {
+      this.authUser = user;
+    } else {
+      this.authError = result.error || "Login failed";
+    }
+  }
+
   render() {
+    // Show loading while checking auth
+    if (this.authChecking) {
+      return html`<div class="auth-loading">Loading...</div>`;
+    }
+    
+    // Show login form if auth required and not logged in
+    if (this.authRequired && !this.authUser) {
+      return this.renderLogin();
+    }
+    
     return html`
       <div class="layout">
+        ${this.authUser ? html`
+          <div class="auth-bar">
+            <span>Logged in as <strong>${this.authUser}</strong></span>
+            <button @click=${this.handleLogout}>Logout</button>
+          </div>
+        ` : ""}
         <section class="panel panel-left">
           <panel-plan
             .title=${this.planTitle}
@@ -248,6 +404,8 @@ export class TripApp extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    // Check auth before doing anything else
+    this.checkAuth();
   let lookupActivityByUidFn = (uid:string | null) => this.tripModel?.activities.find((activity) => activity.uid === uid) ?? null;
   let onFocusedDateChangeFn = () => this.onFocusedDateChange(this.planLines);
 	panelFocus.attachHost(
@@ -262,6 +420,32 @@ export class TripApp extends LitElement {
     this.tryAutoRestoreTrip();
     void this.loadConversationHistory(this.currentTripId);
     void this.announceChatConnection();
+  }
+
+  private async checkAuth() {
+    this.authChecking = true;
+    this.authError = null;
+    
+    // Check if auth is required
+    this.authRequired = await checkAuthRequired();
+    
+    if (!this.authRequired) {
+      this.authChecking = false;
+      return;
+    }
+    
+    // Try auto-login with cached auth key
+    const auth = await tryAutoLogin();
+    if (auth) {
+      this.authUser = auth.user;
+    }
+    
+    this.authChecking = false;
+  }
+
+  private async handleLogout() {
+    await logout();
+    this.authUser = null;
   }
 
   disconnectedCallback() {
@@ -724,7 +908,7 @@ export class TripApp extends LitElement {
 
   private async announceChatConnection(): Promise<void> {
     try {
-      const response = await fetch("/api/gpt/health");
+      const response = await authFetch("/api/gpt/health");
       const payload = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
         message?: string;
@@ -810,7 +994,7 @@ export class TripApp extends LitElement {
     }
 
     try {
-      const response = await fetch(`/api/trip/${encodeURIComponent(tripId)}/conversation`);
+      const response = await authFetch(`/api/trip/${encodeURIComponent(tripId)}/conversation`);
       if (requestId !== this.conversationHistoryRequestId) {
         return;
       }

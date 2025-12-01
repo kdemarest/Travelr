@@ -3,6 +3,7 @@ import { normalizeUserDate } from "./ux-date";
 import { normalizeUserTime } from "./ux-time";
 import { parseCanonicalCommand } from "./command-parse";
 import { parseChatPieces, isCommandPiece, reconstructText, type ChatPiece } from "./chat-pieces";
+import { authFetch } from "./auth";
 
 export interface CommandProcessingResult {
   ok: boolean;
@@ -68,7 +69,7 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
 
   try {
     const textForServer = reconstructText(pieces);
-    const response = await fetch(`/api/trip/${options.currentTripId}/command`, {
+    const response = await authFetch(`/api/trip/${options.currentTripId}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
@@ -144,7 +145,7 @@ async function pollChatbotResponses(
     }
     
     try {
-      const response = await fetch(`/api/chain/${currentGuid}`);
+      const response = await authFetch(`/api/chain/${currentGuid}`);
       const result = (await response.json().catch(() => ({}))) as ChatbotPollResponse;
       
       if (!response.ok) {

@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { URL, fileURLToPath } from "node:url";
-import { getSecret } from "./secrets.js";
+import { getSecretOptional } from "./secrets.js";
+import { shouldWriteDiagnostics } from "./config.js";
 
 const CUSTOM_SEARCH_ENDPOINT = new URL("https://www.googleapis.com/customsearch/v1");
 const MAX_RESULTS = 8;
@@ -10,8 +11,8 @@ const GOOGLE_CX_SECRET = "GOOGLE_CS_CX";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDir = path.resolve(__dirname, "../../trips");
-const lastSearchHtmlPath = path.join(dataDir, "last_search_result.html");
+const diagnosticsDir = path.resolve(__dirname, "../../dataDiagnostics");
+const lastSearchHtmlPath = path.join(diagnosticsDir, "last_search_result.html");
 
 type CustomSearchItem = {
   title?: string;
@@ -33,6 +34,9 @@ export type GoogleSearchResult = {
 
 export async function handleGoogleSearch(query: string): Promise<GoogleSearchResult> {
   const [apiKey, cx] = await Promise.all([getGoogleApiKey(), getGoogleCx()]);
+  if (!apiKey || !cx) {
+    throw new Error("Web search is unavailable: Google API keys not configured.");
+  }
   const endpoint = new URL(CUSTOM_SEARCH_ENDPOINT.href);
   endpoint.searchParams.set("key", apiKey);
   endpoint.searchParams.set("cx", cx);
@@ -97,8 +101,9 @@ function extractSnippets(items?: CustomSearchItem[]): string[] {
 }
 
 async function recordLastSearchPayload(query: string, payload: unknown): Promise<void> {
+  if (!shouldWriteDiagnostics()) return;
   try {
-    await mkdir(dataDir, { recursive: true });
+    await mkdir(diagnosticsDir, { recursive: true });
     const header = `<!-- query: ${query.replace(/-->/g, "")} | timestamp: ${new Date().toISOString()} -->\n`;
     const serialized =
       typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) ?? "(no payload)";
@@ -120,17 +125,26 @@ function escapeHtml(value: string): string {
 
 let cachedApiKey: string | null = null;
 let cachedCx: string | null = null;
+let apiKeyChecked = false;
+let cxChecked = false;
 
-async function getGoogleApiKey(): Promise<string> {
-  if (!cachedApiKey) {
-    cachedApiKey = await getSecret(GOOGLE_API_KEY_SECRET);
+async function getGoogleApiKey(): Promise<string | null> {
+  if (!apiKeyChecked) {
+    cachedApiKey = await getSecretOptional(GOOGLE_API_KEY_SECRET);
+    apiKeyChecked = true;
   }
   return cachedApiKey;
 }
 
-async function getGoogleCx(): Promise<string> {
-  if (!cachedCx) {
-    cachedCx = await getSecret(GOOGLE_CX_SECRET);
+async function getGoogleCx(): Promise<string | null> {
+  if (!cxChecked) {
+    cachedCx = await getSecretOptional(GOOGLE_CX_SECRET);
+    cxChecked = true;
   }
   return cachedCx;
+}
+
+export async function isWebSearchAvailable(): Promise<boolean> {
+  const [apiKey, cx] = await Promise.all([getGoogleApiKey(), getGoogleCx()]);
+  return Boolean(apiKey && cx);
 }

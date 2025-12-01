@@ -1,22 +1,24 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { getSecret } from "./secrets.js";
+import { getSecretOptional, isSecretAvailable } from "./secrets.js";
 import { formatDaySummariesForPrompt } from "./day-summary.js";
+import { isWebSearchAvailable } from "./search.js";
+import { shouldWriteDiagnostics } from "./config.js";
 import type { TripModel } from "./types.js";
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 export const DEFAULT_MODEL = "gpt-4.1";
-const AVAILABLE_MODEL_CANDIDATES = [DEFAULT_MODEL, "gpt-4.1-mini", "gpt-4o-mini"] as const;
+const AVAILABLE_MODEL_CANDIDATES = [DEFAULT_MODEL, "gpt-5.1", "gpt-4.1-mini", "gpt-4o-mini"] as const;
 const OPENAI_SECRET_NAME = "OPENAI_API_KEY";
-const PROMPT_TEMPLATE_URL = new URL("../../catalog/prompt-template.md", import.meta.url);
+const PROMPT_TEMPLATE_URL = new URL("../../dataConfig/prompt-template.md", import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDir = path.resolve(__dirname, "../../trips");
-const lastRequestPath = path.join(dataDir, "last_request.txt");
-const lastResponsePath = path.join(dataDir, "last_response.txt");
-const lastChatbotInputPath = path.join(dataDir, "last_chatbot_input.txt");
+const diagnosticsDir = path.resolve(__dirname, "../../dataDiagnostics");
+const lastRequestPath = path.join(diagnosticsDir, "last_request.txt");
+const lastResponsePath = path.join(diagnosticsDir, "last_response.txt");
+const lastChatbotInputPath = path.join(diagnosticsDir, "last_chatbot_input.txt");
 
 let cachedApiKey: string | null = null;
 let promptTemplatePromise: Promise<string> | null = null;
@@ -63,6 +65,9 @@ export async function sendChatCompletion(
   options: ChatCompletionOptions = {}
 ): Promise<{ text: string; raw: ChatCompletionResponse }> {
   const apiKey = await getOpenAIApiKey();
+  if (!apiKey) {
+    throw new Error("ChatGPT is unavailable: OPENAI_API_KEY not configured.");
+  }
   const promptText = options.templateContext
     ? await buildPromptFromTemplate(options.templateContext)
     : prompt;
@@ -126,6 +131,11 @@ export function setActiveModel(model: string): void {
   activeModel = normalized;
 }
 
+export async function isOpenAIAvailable(): Promise<boolean> {
+  const apiKey = await getOpenAIApiKey();
+  return apiKey !== null;
+}
+
 function buildPayload(prompt: string, options: ChatCompletionOptions) {
   const messages: ChatMessage[] = [];
   if (options.systemPrompt) {
@@ -141,8 +151,9 @@ function buildPayload(prompt: string, options: ChatCompletionOptions) {
 }
 
 async function recordChatbotInput(promptText: string): Promise<void> {
+  if (!shouldWriteDiagnostics()) return;
   try {
-    await mkdir(dataDir, { recursive: true });
+    await mkdir(diagnosticsDir, { recursive: true });
     await writeFile(lastChatbotInputPath, promptText, "utf-8");
   } catch (error) {
     console.warn("Failed to record chatbot input", error);
@@ -150,8 +161,9 @@ async function recordChatbotInput(promptText: string): Promise<void> {
 }
 
 export async function recordRequest(request: unknown): Promise<void> {
+  if (!shouldWriteDiagnostics()) return;
   try {
-    await mkdir(dataDir, { recursive: true });
+    await mkdir(diagnosticsDir, { recursive: true });
     await writeFile(lastRequestPath, JSON.stringify(request, null, 2), "utf-8");
   } catch (error) {
     console.warn("Failed to record request", error);
@@ -159,8 +171,9 @@ export async function recordRequest(request: unknown): Promise<void> {
 }
 
 async function recordResponse(response: unknown): Promise<void> {
+  if (!shouldWriteDiagnostics()) return;
   try {
-    await mkdir(dataDir, { recursive: true });
+    await mkdir(diagnosticsDir, { recursive: true });
     await writeFile(lastResponsePath, JSON.stringify(response, null, 2), "utf-8");
   } catch (error) {
     console.warn("Failed to record response", error);
@@ -182,15 +195,17 @@ function buildHeaders(apiKey: string) {
 
 export async function buildPromptFromTemplate(context: PromptTemplateContext): Promise<string> {
   const template = await loadPromptTemplate();
-  return renderPromptTemplate(template, context);
+  return await renderPromptTemplate(template, context);
 }
 
-async function getOpenAIApiKey(): Promise<string> {
+async function getOpenAIApiKey(): Promise<string | null> {
   if (cachedApiKey) {
     return cachedApiKey;
   }
-  const secret = await getSecret(OPENAI_SECRET_NAME);
-  cachedApiKey = secret;
+  const secret = await getSecretOptional(OPENAI_SECRET_NAME);
+  if (secret) {
+    cachedApiKey = secret;
+  }
   return secret;
 }
 
@@ -212,7 +227,7 @@ async function loadPromptTemplate(): Promise<string> {
   return promptTemplatePromise;
 }
 
-function renderPromptTemplate(template: string, context: PromptTemplateContext): string {
+async function renderPromptTemplate(template: string, context: PromptTemplateContext): Promise<string> {
   const modelText = formatTripModel(context.tripModel);
   const daySummariesText = formatDaySummaries(context.tripModel);
   const userText = sanitizeUserInput(context.userInput);
@@ -221,6 +236,12 @@ function renderPromptTemplate(template: string, context: PromptTemplateContext):
   const preferencesText = formatUserPreferences(context.userPreferences);
   const markedActivitiesText = formatMarkedList(context.markedActivities);
   const markedDatesText = formatMarkedList(context.markedDates);
+
+  // Check web search availability for the template
+  const webSearchAvailable = await isWebSearchAvailable();
+  const websearchUnavailableText = webSearchAvailable 
+    ? "" 
+    : "   **⚠️ Web search is currently UNAVAILABLE (API keys not configured)**";
 
   let result = template;
   result = replaceTemplateToken(result, "{{tripModel}}", modelText);
@@ -231,6 +252,7 @@ function renderPromptTemplate(template: string, context: PromptTemplateContext):
   result = replaceTemplateToken(result, "{{userPreferences}}", preferencesText);
   result = replaceTemplateToken(result, "{{markedActivities}}", markedActivitiesText);
   result = replaceTemplateToken(result, "{{markedDates}}", markedDatesText);
+  result = replaceTemplateToken(result, "{{websearchUnavailable}}", websearchUnavailableText);
   return result;
 }
 

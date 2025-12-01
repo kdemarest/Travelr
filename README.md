@@ -1,90 +1,175 @@
 # Travelr
 
-Travelr is a personal trip planner with a Node.js + TypeScript API (`server/`) and a lit-based TypeScript client (`client/`). The backend replays slash-command journals to rebuild a `TripModel`, while the frontend will evolve into a column-based UI for inspecting and editing activities.
-
-> **New or returning developer?** Start with `devenvsetup/README.md` to rebuild the Docker-based development environment on Windows before following the steps below.
+Travelr is a personal trip planner with a Node.js + TypeScript API (`server/`) and a lit-based TypeScript client (`client/`). The backend replays slash-command journals to rebuild a `TripModel`, while the frontend provides a column-based UI for inspecting and editing activities.
 
 ## Prerequisites
 
-- Node.js 20.9+ (includes npm 10+)
-- VS Code optional but recommended for debugging (no Docker required at this stage)
+Install these in order:
 
-## Getting Started - All Environments
+- Git
+- Node.js 24+ (includes npm)
+- Docker Desktop (for containerized deployment)
+- AWS CLI (for cloud deployment - use `winget install Amazon.AWSCLI`)
+- VS Code (recommended)
 
-Go get:
+## Quick Start
 
-1. a ChatGPT API Key
-2. A Google Custonm Search ID
-3. On Google Cloud get a Custom Search API key
-4. Follow the environment-specific instructions below.
+```powershell
+# 1. Clone and install
+git clone https://github.com/kdemarest/travelr.git
+cd travelr
+npm install
 
-## Developing in Docker/Linux
+# 2. Set up API keys in Windows Credential Manager (see "API Keys" below)
 
-- Follow the README.md in /devenvsetup
+# 3. Configure your environment
+node setup.js
 
-## Developing in Windows 11
+# 4. Launch the app
+launch.bat
+```
 
-1. **Install basic dev environment**
-- The basic environment (Node, Python, VSCode) is all part of Ken's standard "new computer" install document
+## Developer Overview
 
-1. **Install NodeJS modules**
+### Scripts
 
-	```powershell
-	npm install
-	```
+| Script | Purpose |
+|--------|---------|
+| `node setup.js` | Detects your environment and sets `TRAVELR_CONFIG` permanently |
+| `launch.bat` | Builds and runs both server and client for local development |
+| `node deploy.js` | Builds Docker image, pushes to ECR, deploys to AWS App Runner |
+| `node deploy.js --dry-run` | Shows what deploy would do without making changes |
 
-1. **Set up the Travelr API keys (Windows Credential Manager only)**
+### Configuration
 
-	- Install Python 3.x if needed, then `pip install keyring`.
-	- See Ken's password file for a fully runnable version of the code below.
-	- In a Python REPL, store each secret under the TRAVELR service:
-		```python
-		import keyring
-		SERVICE = "TRAVELR"
-		keyring.set_password(SERVICE, "OPENAI_API_KEY", "sk-...")
-		keyring.set_password(SERVICE, "GOOGLE_CS_API_KEY", "AIza...")
-		keyring.set_password(SERVICE, "GOOGLE_CS_CX", "programmable-search-id")
-		```
-	- Confirm the entries exist under **Control Panel → Credential Manager → Windows Credentials → Generic Credentials** with targets `TRAVELR/OPENAI_API_KEY`, `TRAVELR/GOOGLE_CS_API_KEY`, and `TRAVELR/GOOGLE_CS_CX`.
-	- Verify OpenAI connectivity any time with `npm run gpt:first-light --workspace server`, which invokes `server/src/gpt.ts`.
+The app uses environment-specific config files in `dataConfig/`:
 
+- `config.dev-win11.json` – Local Windows development
+- `config.prod-debian.json` – Production Docker/Linux
 
-## Running Travelr
+The `TRAVELR_CONFIG` environment variable (set by `setup.js`) determines which config file is loaded.
 
-On windows, use Launch.bat
+### API Keys
 
-On Docker/Ubuntu to compile...
-	npm run typecheck --workspace server
-	npm run build --workspace server
-	npm run build --workspace client
+Set these environment variables (User environment variables recommended):
 
-On Docker/Ubuntu to run...
-	npm run dev --workspace server
-	npm run dev --workspace client
+| Variable | Description |
+|----------|-------------|
+| `TRAVELR_CONFIG` | which config.<TRAVELR_CONFIG>.json config to use |
+| `OPENAI_API_KEY` | ChatGPT API key |
+| `GOOGLE_CS_API_KEY` | Google Custom Search API key |
+| `GOOGLE_CS_CX` | Google Programmable Search Engine ID |
 
-Note: Vite serves the lit app at `http://localhost:5173`, proxying `/api` calls to the server.
+To set using setup.js:
+```bash
+node setup.js dev (or prod)
+node setup.js OPENAI_API_KEY sk-proj-xxx
+node setup.js GOOGLE_CS_API_KEY AIzaSyxxx
+node setup.js GOOGLE_CS_CX your-search-engine-id
+```
 
+Restart your terminal after setting variables.
+
+## Running Locally
+
+**Windows:** Use `launch.bat`
+
+**Manual (any OS):**
+```bash
+npm run build --workspace server
+npm run build --workspace client
+npm run dev --workspace server   # Terminal 1
+npm run dev --workspace client   # Terminal 2
+```
+
+Vite serves the client at `http://localhost:5173`, proxying `/api` calls to the server on port 4000.
+
+## Deploying to AWS
+
+### AWS CLI Setup
+
+1. Install AWS CLI: `winget install Amazon.AWSCLI`
+2. Create an IAM user (`kdemarest`) with `AdministratorAccess` policy
+3. Create access keys for the user (CLI use case)
+4. Configure the CLI:
+   ```bash
+   aws configure
+   ```
+   - Region: `us-east-1`
+   - Output format: `json`
+
+### Deploy
+
+```bash
+# Test deployment (no changes made)
+node deploy.js --dry-run
+
+# Full deployment
+node deploy.js
+```
+
+The deploy script:
+1. Reads secrets from environment variables
+2. Builds the Docker image
+3. Pushes to Amazon ECR
+4. Deploys to AWS App Runner
 
 ## Project Layout
 
-- `server/` – Express-based API, future journal/parser/reducer modules, outputs to `server/dist/`.
-- `client/` – Vite + lit frontend, entry point at `client/index.html` and components under `client/src/`.
-- `trips/` – Journals (`<tripName>.travlrjournal`) the backend replays; the server ensures this directory exists.
-- `tsconfig.base.json` – Shared TypeScript compiler defaults for both workspaces.
+| Directory | Purpose |
+|-----------|---------|
+| `server/` | Express API, journal parser, trip model reducer |
+| `client/` | Vite + Lit frontend components |
+| `scripts/` | Utility scripts (password hashing, file persistence) |
+| `dataTrips/` | Trip journals (`*.travlrjournal`) |
+| `dataUsers/` | User accounts and auth data |
+| `dataDiagnostics/` | Debug logs (`last_request.txt`, etc.) |
+| `dataConfig/` | Environment configs and prompt template |
+| `catalog/` | Static reference data (countries, exchange rates) |
+| `deploy/` | Dockerfile and docker-compose for deployment |
+
+## User Management
+
+User accounts are stored in `dataUsers/users.json`. Passwords are hashed using scrypt.
+
+### Adding a New User
+
+1. Generate a password hash:
+   ```bash
+   npx ts-node scripts/hashPassword.ts "mySecurePassword"
+   ```
+
+2. Add the user to `dataUsers/users.json`:
+   ```json
+   {
+     "username": { "password": "<paste-hash-here>", "isAdmin": false }
+   }
+   ```
+
+### User Format
+
+```json
+{
+  "username": {
+    "password": "salt:hash",
+    "isAdmin": true
+  }
+}
+```
+
+- `password`: scrypt hash in `salt:hash` format (generated by `hashPassword.ts`)
+- `isAdmin`: optional, grants access to admin endpoints
 
 ## Slash Commands
 
-- `/newtrip <tripId>` – Initialize or reset a journal for `tripId`.
-- `/add activityType=<type> field=value ...` – Append a new activity (server assigns `uid`).
-- `/edit <uid> field=value ...` – Update existing activity fields.
-- `/movedate from="YYYY-MM-DD" to="YYYY-MM-DD"` – Move every activity on a date.
-- `/undo [count]` – Step backward through the journal timeline without deleting entries. `count` defaults to 1.
-- `/redo [count]` – Reapply commands that were previously undone, provided no new commands were recorded after the undo.
-- `/trip [tripId]` and `/help` – List trips or show help text.
-- `/renormalize` – Maintenance-only command that rewrites every `.travlrjournal` into canonical form, producing `.tmp` files for review. Trigger this manually; AI chat responses must not invoke it.
-
-## Next Steps
-
-- Flesh out slash-command parser and reducer so the API returns authoritative trip models.
-- Build initial lit components (`<trip-app>`, day/plan panels) that consume the API.
+| Command | Description |
+|---------|-------------|
+| `/newtrip <tripId>` | Initialize or reset a trip journal |
+| `/add activityType=<type> field=value ...` | Add a new activity |
+| `/edit <uid> field=value ...` | Update an existing activity |
+| `/movedate from="YYYY-MM-DD" to="YYYY-MM-DD"` | Move all activities on a date |
+| `/undo [count]` | Step backward through journal history |
+| `/redo [count]` | Reapply undone commands |
+| `/trip [tripId]` | List trips or load a specific trip |
+| `/help` | Show available commands |
 - Add VS Code launch/debug configuration once the API endpoints stabilize.

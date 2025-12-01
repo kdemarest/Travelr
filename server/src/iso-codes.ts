@@ -17,7 +17,7 @@ export interface IsoCodeResult {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const catalogPath = path.resolve(__dirname, "../../catalog/iso-country-currency.json");
+const catalogPath = path.resolve(__dirname, "../../catalog/countryData.json");
 
 let isoCodeSource: IsoCodeRecord[] = readCatalogFromDisk();
 let lookup = buildLookup(isoCodeSource);

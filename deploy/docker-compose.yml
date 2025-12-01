@@ -1,0 +1,32 @@
+# Travelr - Local Docker development
+# Use this to test the Docker build locally
+
+services:
+  travelr:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - NODE_ENV=production
+      # Set your API keys here or use .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_CX=${GOOGLE_CX}
+    volumes:
+      # Persist trip data, diagnostics, and user preferences
+      - ./data/dataTrips:/app/dataTrips
+      - ./data/dataDiagnostics:/app/dataDiagnostics
+      - ./data/userprefs:/app/userprefs
+    restart: unless-stopped
+
+# Usage:
+# 1. Create a .env file in deploy/ with your API keys:
+#    OPENAI_API_KEY=sk-...
+#    GOOGLE_API_KEY=AIza...
+#    GOOGLE_CX=...
+#
+# 2. Run: docker-compose up --build
+# 3. Access: http://localhost:4000

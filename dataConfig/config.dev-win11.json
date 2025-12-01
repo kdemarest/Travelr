@@ -1,0 +1,7 @@
+{
+  "serveMode": "dev",
+  "whoServesStaticFiles": "vite",
+  "port": 4000,
+  "vitePort": 5173,
+  "writeDiagnosticFiles": true
+}

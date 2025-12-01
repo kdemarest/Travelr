@@ -1,0 +1,6 @@
+{
+  "serveMode": "prod",
+  "whoServesStaticFiles": "express",
+  "port": 4000,
+  "writeDiagnosticFiles": false
+}

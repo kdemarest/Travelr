@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs (we rebuild in container)
+dist/
+**/dist/
+
+# Development files
+.git/
+.gitignore
+.vscode/
+.devcontainer/
+devenvsetup/
+*.log
+
+# Local data (mounted as volumes in production)
+dataTrips/
+dataDiagnostics/
+userprefs/
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files with secrets
+.env
+.env.*
+deploy/.env
+deploy/data/
+
+# IDE
+*.swp
+*.swo
+.idea/
+
+# Deploy directory except Dockerfile
+deploy/docker-compose.yml
+deploy/.dockerignore
