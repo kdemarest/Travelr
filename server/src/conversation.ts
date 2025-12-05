@@ -38,7 +38,7 @@ export class Conversation {
       const newMessages = data.split(/\r?\n/).filter(line => line.length > 0);
       messages.push(...newMessages);
     }
-    this.file.setDirty(messages);
+    this.file.setDirty();
   }
 
   append(line: string): void {
@@ -54,7 +54,7 @@ export class Conversation {
       messages.shift();
     }
     
-    this.file.setDirty(messages);
+    this.file.setDirty();
   }
   
   flush(): void {

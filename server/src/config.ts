@@ -17,7 +17,7 @@ interface ServerConfig {
   port?: number;
   vitePort?: number;
   writeDiagnosticFiles?: boolean;
-  hotReloadAllowed?: boolean;
+  deployQuickAllowed?: boolean;
   isTest?: boolean;
 }
 
@@ -96,17 +96,17 @@ export function getDataTripsDir(): string {
 }
 
 /**
- * Check if hot reload is allowed.
+ * Check if deploy-quick is allowed.
  * Must be explicitly enabled in config for security.
  */
-export function isHotReloadAllowed(): boolean {
+export function isDeployQuickAllowed(): boolean {
   const config = getConfig();
-  return config.hotReloadAllowed ?? false;
+  return config.deployQuickAllowed ?? false;
 }
 
 /**
  * Whether this is a test environment (isTest in config).
- * Used to skip npm install during hot-reload (protects junction-linked node_modules).
+ * Used to skip npm install during deploy-quick (protects junction-linked node_modules).
  */
 export function isTestMode(): boolean {
   const config = getConfig();

@@ -1,13 +1,23 @@
 import type { LazyFile } from "./lazy-file.js";
 import type { UserPreferences } from "./user-preferences.js";
-import type { ClientDataCache } from "./client-data-cache.js";
+import { ensureUserPrefsFile } from "./user-preferences.js";
+import { ClientDataCache } from "./client-data-cache.js";
 
 /**
  * Authenticated user info.
  */
-export interface User {
+export class User {
   userId: string;
   isAdmin: boolean;
-  prefs: LazyFile<UserPreferences>;
   clientDataCache: ClientDataCache;
+
+  constructor(userId: string, isAdmin: boolean, clientDataCache: ClientDataCache) {
+    this.userId = userId;
+    this.isAdmin = isAdmin;
+    this.clientDataCache = clientDataCache;
+  }
+
+  get prefsFile(): LazyFile<UserPreferences> {
+    return ensureUserPrefsFile(this.userId);
+  }
 }

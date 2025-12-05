@@ -1,0 +1,33 @@
+{
+  "name": "@jeesty/ops",
+  "version": "0.1.0",
+  "description": "Deployment and operations tools",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./deploy": {
+      "types": "./dist/deploy-quick.d.ts",
+      "import": "./dist/deploy-quick.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^22.5.1",
+    "typescript": "^5.8.3"
+  },
+  "files": [
+    "dist"
+  ]
+}

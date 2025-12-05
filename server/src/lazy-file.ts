@@ -2,7 +2,7 @@
  * LazyFile - In-memory cache for a file with lazy writes.
  * 
  * Explicit lifecycle: call load() once at startup, then access data directly.
- * After mutations, call setDirty(data) to schedule a lazy write. Uses two
+ * After mutations, call setDirty() to schedule a lazy write. Uses two
  * timers: a debounce timer (resets on each setDirty) and a max delay timer
  * (guarantees write within maxDelayMs even under continuous mutations).
  * 
@@ -10,7 +10,7 @@
  * The __dataVerifier field catches accidental reassignment at runtime.
  * 
  *   WRONG:  lazyFile.data = { ...lazyFile.data, newKey: value };
- *   RIGHT:  lazyFile.data.newKey = value; lazyFile.setDirty(lazyFile.data);
+ *   RIGHT:  lazyFile.data.newKey = value; lazyFile.setDirty();
  * 
  * Usage:
  *   const usersFile = new LazyFile<UsersFile>(
@@ -26,7 +26,7 @@
  *   // Access data directly (no magic, no I/O)
  *   const users = usersFile.data;
  *   users["newUser"] = { password: "..." };
- *   usersFile.setDirty(users);  // Schedule lazy write
+ *   usersFile.setDirty();  // Schedule lazy write
  *   
  *   // On shutdown - flush pending writes
  *   usersFile.flush();
@@ -102,16 +102,9 @@ export class LazyFile<T> {
   
   /**
    * Mark data as dirty and schedule a lazy write.
-   * @param dataRef - Must be the same reference as `data` (prevents accidental reassignment)
    */
-  setDirty(dataRef: T): void {
+  setDirty(): void {
     this.verifyDataIntegrity();
-    if (dataRef !== this.data) {
-      throw new Error(
-        `LazyFile(${this.filePath}): setDirty() was passed a different object than data. ` +
-        `You must mutate the existing data object in place, not reassign it to a new object.`
-      );
-    }
     
     // Reset debounce timer on each setDirty
     if (this.debounceTimer) {

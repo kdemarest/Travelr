@@ -2,5 +2,6 @@
   "serveMode": "prod",
   "whoServesStaticFiles": "express",
   "port": 4000,
-  "writeDiagnosticFiles": false
+  "writeDiagnosticFiles": false,
+  "deployQuickAllowed": true
 }

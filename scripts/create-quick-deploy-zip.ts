@@ -1,8 +1,8 @@
 #!/usr/bin/env npx tsx
 /**
- * create-quick-deploy-zip.ts - Create a deployment zip for hot reload
+ * create-quick-deploy-zip.ts - Create a deployment zip for quick deploy
  * 
- * Creates a zip containing all source files needed for a hot reload deployment.
+ * Creates a zip containing all source files needed for a quick deploy.
  * Used by deploy.js for quick deploys and by test scripts.
  * 
  * Uses adm-zip for both creation and extraction (relaunch.ts uses same library).
@@ -26,7 +26,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Create a deployment zip containing source files for hot reload.
+ * Create a deployment zip containing source files for quick deploy.
  * 
  * @param sourceRoot - The root directory containing source code to zip (REQUIRED)
  * @param outputPath - Where to write the zip (optional, defaults to sourceRoot/dataTemp/)

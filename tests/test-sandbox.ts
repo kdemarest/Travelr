@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * test-testsvr.ts - Verify that testsvr.ts creates proper isolated environments
+ * test-sandbox.ts - Verify that sandbox.ts creates proper isolated environments
  * 
  * Tests:
  * 1. No args shows usage
@@ -11,7 +11,7 @@
  * 6. -remove kills and deletes directory
  * 7. Safety checks prevent killing non-test processes
  * 
- * Usage: npx tsx tests/test-testsvr.ts
+ * Usage: npx tsx tests/test-sandbox.ts
  */
 
 import { execSync } from "node:child_process";
@@ -23,7 +23,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_ROOT = path.resolve(__dirname, "..");
 const TEST_DIRS_ROOT = path.join(APP_ROOT, "testDirs");
-const TESTSVR = path.join(APP_ROOT, "scripts", "testsvr.ts");
+const SANDBOX = path.join(APP_ROOT, "scripts", "sandbox.ts");
 
 // Test state
 let testPort = 0;
@@ -56,11 +56,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Run testsvr command and return stdout.
+ * Run SANDBOX command and return stdout.
  */
-function runTestsvr(args: string[]): { stdout: string; stderr: string; exitCode: number } {
+function runSANDBOX(args: string[]): { stdout: string; stderr: string; exitCode: number } {
   try {
-    const result = execSync(`npx tsx "${TESTSVR}" ${args.join(" ")}`, {
+    const result = execSync(`npx tsx "${SANDBOX}" ${args.join(" ")}`, {
       cwd: APP_ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"]
@@ -76,16 +76,16 @@ function runTestsvr(args: string[]): { stdout: string; stderr: string; exitCode:
 }
 
 /**
- * Spawn testsvr.ts and wait for READY signal.
- * testsvr now exits after printing READY, server keeps running.
+ * Spawn SANDBOX.ts and wait for READY signal.
+ * SANDBOX now exits after printing READY, server keeps running.
  * Returns the port number, or 0 on failure.
  */
 async function spawnTestServer(copyCode: boolean): Promise<number> {
   const args = ["-spawn"];
   if (copyCode) args.push("-copycode");
   
-  // Use execSync - simple and reliable. testsvr exits after READY, server keeps running.
-  const { stdout, exitCode } = runTestsvr(args);
+  // Use execSync - simple and reliable. SANDBOX exits after READY, server keeps running.
+  const { stdout, exitCode } = runSANDBOX(args);
   
   if (exitCode !== 0) {
     return 0;
@@ -96,11 +96,11 @@ async function spawnTestServer(copyCode: boolean): Promise<number> {
 }
 
 /**
- * Clean up via testsvr -remove (preferred method).
+ * Clean up via SANDBOX -remove (preferred method).
  */
-function cleanupViaTestsvr(): void {
+function cleanupViaSANDBOX(): void {
   if (testPort) {
-    runTestsvr(["-remove", String(testPort)]);
+    runSANDBOX(["-remove", String(testPort)]);
   }
 }
 
@@ -132,7 +132,7 @@ async function cleanupTestDir(): Promise<boolean> {
 async function testUsage(): Promise<void> {
   log(`\n${CYAN}Test: Usage display${RESET}`);
   
-  const { stdout, exitCode } = runTestsvr([]);
+  const { stdout, exitCode } = runSANDBOX([]);
   
   if (exitCode === 0) {
     pass("No args exits with code 0");
@@ -228,7 +228,7 @@ async function testList(): Promise<void> {
     return;
   }
   
-  const { stdout, exitCode } = runTestsvr(["-list"]);
+  const { stdout, exitCode } = runSANDBOX(["-list"]);
   
   if (exitCode === 0) {
     pass("-list exits with code 0");
@@ -263,7 +263,7 @@ async function testKill(): Promise<void> {
     return;
   }
   
-  const { stdout, exitCode } = runTestsvr(["-kill", String(testPort)]);
+  const { stdout, exitCode } = runSANDBOX(["-kill", String(testPort)]);
   
   if (exitCode === 0) {
     pass("-kill exits with code 0");
@@ -304,7 +304,7 @@ async function testRemove(): Promise<void> {
     return;
   }
   
-  const { stdout, exitCode } = runTestsvr(["-remove", String(testPort)]);
+  const { stdout, exitCode } = runSANDBOX(["-remove", String(testPort)]);
   
   if (exitCode === 0) {
     pass("-remove exits with code 0");
@@ -369,7 +369,7 @@ async function testCopyCodeSpawn(): Promise<void> {
   }
   
   // Clean up using -remove (kills server first, then removes directory)
-  const { exitCode } = runTestsvr(["-remove", String(testPort)]);
+  const { exitCode } = runSANDBOX(["-remove", String(testPort)]);
   if (exitCode === 0 && !fs.existsSync(testDir)) {
     pass("-remove cleans up -copycode directory (junctions don't block)");
   } else {
@@ -385,7 +385,7 @@ async function testSafetyChecks(): Promise<void> {
   log(`\n${CYAN}Test: Safety checks${RESET}`);
   
   // Test killing out-of-range port
-  const { exitCode: exitCode1, stderr: stderr1, stdout: stdout1 } = runTestsvr(["-kill", "3000"]);
+  const { exitCode: exitCode1, stderr: stderr1, stdout: stdout1 } = runSANDBOX(["-kill", "3000"]);
   if (exitCode1 !== 0 && (stderr1 + stdout1).includes("must be")) {
     pass("-kill rejects out-of-range port");
   } else {
@@ -393,7 +393,7 @@ async function testSafetyChecks(): Promise<void> {
   }
   
   // Test killing non-existent port (should succeed gracefully)
-  const { exitCode: exitCode2, stdout: stdout2 } = runTestsvr(["-kill", "60999"]);
+  const { exitCode: exitCode2, stdout: stdout2 } = runSANDBOX(["-kill", "60999"]);
   if (exitCode2 === 0 && stdout2.includes("No server running")) {
     pass("-kill handles non-existent server gracefully");
   } else {
@@ -401,7 +401,7 @@ async function testSafetyChecks(): Promise<void> {
   }
   
   // Test removing non-existent port
-  const { exitCode: exitCode3, stdout: stdout3 } = runTestsvr(["-remove", "60998"]);
+  const { exitCode: exitCode3, stdout: stdout3 } = runSANDBOX(["-remove", "60998"]);
   if (exitCode3 === 0 && stdout3.includes("does not exist")) {
     pass("-remove handles non-existent directory gracefully");
   } else {
@@ -415,7 +415,7 @@ async function testSafetyChecks(): Promise<void> {
 
 async function main() {
   log("=".repeat(60));
-  log("  TESTSVR.TS TEST SUITE");
+  log("  SANDBOX.TS TEST SUITE");
   log("=".repeat(60));
   
   try {
@@ -429,7 +429,7 @@ async function main() {
   } finally {
     // Ensure cleanup on any failure
     if (testPort) {
-      runTestsvr(["-remove", String(testPort)]);
+      runSANDBOX(["-remove", String(testPort)]);
     }
     await cleanupTestDir();
   }
@@ -444,7 +444,7 @@ async function main() {
 main().catch(async err => {
   console.error("Test suite crashed:", err);
   if (testPort) {
-    runTestsvr(["-remove", String(testPort)]);
+    runSANDBOX(["-remove", String(testPort)]);
   }
   await cleanupTestDir();
   process.exit(1);

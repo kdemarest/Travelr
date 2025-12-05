@@ -12,6 +12,18 @@ Install these in order:
 - AWS CLI (for cloud deployment - use `winget install Amazon.AWSCLI`)
 - VS Code (recommended)
 
+### AWS CLI Configuration
+
+After installing AWS CLI, disable the pager to prevent commands from blocking on "-- More --":
+
+```powershell
+# Set permanently for your user account
+[Environment]::SetEnvironmentVariable("AWS_PAGER", "", "User")
+
+# Also set for current session
+$env:AWS_PAGER = ""
+```
+
 ## Quick Start
 
 ```powershell

@@ -1,11 +1,11 @@
 {
   "ken": {
     "device-716980449a5543de": {
-      "authKey": "auth-12ef687624b9ec948907ea1f892574cdb97b88d612da2ecbffc2161a3e38c31f",
+      "authKey": "auth-e173e6b2e98348d8671ee03acf770bcabee96e62610ca744c621d34a7bf48d27",
       "label": "Windows / Chrome",
       "city": "localhost",
       "firstSeen": "2025-12-01",
-      "lastSeen": "2025-12-03"
+      "lastSeen": "2025-12-04"
     },
     "device-a00cb13cf7f343ac": {
       "authKey": "auth-98f4dbdbfa3da49937f4f6cc0c433a33e730be6399727c85bc8b4a025b13d69b",
@@ -22,6 +22,52 @@
       "city": "localhost",
       "firstSeen": "2025-12-03",
       "lastSeen": "2025-12-03"
+    },
+    "device-jeesty-ops-deploy": {
+      "authKey": "auth-23124a7204b0df39e2b15cc03b0bc47c59dcf156157fb22f2a1bbcda9d0c8439",
+      "label": "unknown device",
+      "city": "localhost",
+      "firstSeen": "2025-12-03",
+      "lastSeen": "2025-12-03"
+    },
+    "device-post-script": {
+      "authKey": "auth-b736e4941a6e94a4e198e172fb9d78367b485f4f96fc9204b4540ad7f633204f",
+      "label": "unknown device",
+      "city": "localhost",
+      "firstSeen": "2025-12-03",
+      "lastSeen": "2025-12-05"
+    },
+    "device-test-system-users": {
+      "authKey": "auth-b7d957ac203bbc58ba1578fdab32e1774423f049528a6f69c73cd79e450aa4a6",
+      "label": "test script",
+      "city": "localhost",
+      "firstSeen": "2025-12-05",
+      "lastSeen": "2025-12-05"
+    },
+    "device-quick-deploy": {
+      "authKey": "auth-8d766f04858029e15c17a1aa0b9838d1dda5bb12f1ea6777aed5e087120e76bf",
+      "label": "unknown device",
+      "city": "localhost",
+      "firstSeen": "2025-12-05",
+      "lastSeen": "2025-12-05"
+    }
+  },
+  "admin": {
+    "device-test-system-users": {
+      "authKey": "auth-3f2fdfd4d5961dbbc2c61f3c8c3caa8f71f96f361b63621adaf9de848af74fb9",
+      "label": "test script",
+      "city": "localhost",
+      "firstSeen": "2025-12-05",
+      "lastSeen": "2025-12-05"
+    }
+  },
+  "testbot": {
+    "device-test-system-users": {
+      "authKey": "auth-50055b8491a00e858bef07d88eb13695c665def2b0a0898247f18145e06edae0",
+      "label": "test script",
+      "city": "localhost",
+      "firstSeen": "2025-12-05",
+      "lastSeen": "2025-12-05"
     }
   }
 }

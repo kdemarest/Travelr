@@ -27,23 +27,32 @@ RUN npm install --production=false
 
 # Copy source files
 COPY tsconfig.base.json ./
+COPY version.txt ./
 COPY client/ ./client/
 COPY server/ ./server/
-COPY dataCountries/ ./dataCountries/
 COPY dataConfig/ ./dataConfig/
 
 # Build client and server
 RUN npm run build
 
-# Create directories for runtime data and set ownership
-RUN mkdir -p /app/dataTrips /app/dataDiagnostics /app/dataUserPrefs /app/dataUsers \
+# Create directories for runtime data and set ownership of ALL of /app.
+# The chown -R makes everything (including client/, server/, scripts/) writable
+# by travelr. This is required for deploy-quick, which extracts .ts files and
+# rebuilds in-place while running as USER travelr.
+RUN mkdir -p /app/dataTrips /app/dataDiagnostics /app/dataUserPrefs /app/dataUsers /app/dataCountries \
     && chown -R travelr:travelr /app
 
-# Copy user authentication data (if exists)
+# Copy data files AFTER the chown. COPY creates root-owned files, so we use
+# --chown to make them writable by travelr at runtime.
 COPY --chown=travelr:travelr dataUsers/ ./dataUsers/
+COPY --chown=travelr:travelr dataTrips/ ./dataTrips/
+COPY --chown=travelr:travelr dataUserPrefs/ ./dataUserPrefs/
+COPY --chown=travelr:travelr dataCountries/ ./dataCountries/
 
-# Remove dev dependencies to shrink image
-RUN npm prune --production
+# NOTE: We keep dev dependencies (tsc, vite) for deploy-quick support.
+# Deploy-quick extracts new source files and runs `npm run build` in-container.
+# This makes the image larger (~200MB more) but enables fast deploys without
+# rebuilding the entire Docker image.
 
 # Expose the server port
 EXPOSE 4000
@@ -66,5 +75,5 @@ USER travelr
 # Use dumb-init to handle signals properly (PID 1 problem)
 ENTRYPOINT ["dumb-init", "--"]
 
-# Start the server
-CMD ["node", "server/dist/index.js"]
+# Start via server-runner (uses tsx to run TypeScript directly)
+CMD ["npx", "tsx", "server/src/server-runner.ts"]

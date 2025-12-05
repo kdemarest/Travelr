@@ -14,11 +14,15 @@ dist/
 devenvsetup/
 *.log
 
-# Local data (mounted as volumes in production)
-dataTrips/
+# Local data that should NOT be deployed (mounted as volumes in production)
 dataDiagnostics/
-dataUserPrefs/
 data/
+
+# These ARE copied by Dockerfile with --chown for initial container setup
+# dataTrips/
+# dataUserPrefs/
+# dataUsers/
+# dataCountries/
 
 # OS files
 .DS_Store

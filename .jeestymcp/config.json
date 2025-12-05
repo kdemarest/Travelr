@@ -1,5 +1,109 @@
 {
-    "tools": {},
+    "tools": {
+        "deploy-quick": {
+            "usage": "Quick deploy to production (code only, no Docker rebuild)",
+            "cmd": "npx tsx scripts/quick-deploy.ts -prod"
+        },
+        "deploy-quick-dev": {
+            "usage": "Quick deploy to local dev server",
+            "cmd": "npx tsx scripts/quick-deploy.ts http://localhost:4000"
+        },
+        "test-system-users": {
+            "usage": "Test login for all system users (admin, deploybot, testbot)",
+            "cmd": "npx tsx scripts/test-system-users.ts"
+        },
+        "sandbox": {
+            "usage": "Spin up a clean isolated server environment for testing or experimentation",
+            "cmd": "npx tsx scripts/sandbox.ts",
+            "params": {
+                "spawn": {
+                    "type": "boolean",
+                    "description": "Start a new isolated test server",
+                    "flag": "-spawn"
+                },
+                "copycode": {
+                    "type": "boolean",
+                    "description": "Also copy server/client code (required for deploy-quick tests)",
+                    "flag": "-copycode"
+                },
+                "list": {
+                    "type": "boolean",
+                    "description": "List all running test servers",
+                    "flag": "-list"
+                },
+                "kill": {
+                    "type": "number",
+                    "description": "Kill test server on this port (60000-60999)",
+                    "flag": "-kill"
+                },
+                "remove": {
+                    "type": "number",
+                    "description": "Kill and delete test server directory for this port",
+                    "flag": "-remove"
+                }
+            }
+        },
+        "check-health": {
+            "usage": "Check if servers are running and healthy",
+            "cmd": "node scripts/check-health.js"
+        },
+        "post": {
+            "usage": "Make HTTP requests to the API server",
+            "cmd": "npx tsx scripts/post.ts",
+            "params": {
+                "endpoint": {
+                    "type": "string",
+                    "description": "API endpoint path (e.g., /ping, /api/trip/demo/command)",
+                    "required": true,
+                    "addToCmdWithoutKey": true
+                },
+                "body": {
+                    "type": "string",
+                    "description": "JSON body for POST requests (omit for GET)",
+                    "addToCmdWithoutKey": true
+                },
+                "prod": {
+                    "type": "boolean",
+                    "description": "Target production server instead of dev",
+                    "flag": "-prod"
+                },
+                "deploybot": {
+                    "type": "boolean",
+                    "description": "Authenticate as deploybot",
+                    "flag": "-deploybot"
+                }
+            }
+        },
+        "hashPassword": {
+            "usage": "Generate a bcrypt hash for a password",
+            "cmd": "npx tsx scripts/hashPassword.ts",
+            "params": {
+                "password": {
+                    "type": "string",
+                    "description": "The password to hash",
+                    "required": true,
+                    "addToCmdWithoutKey": true
+                }
+            }
+        },
+        "verifyPassword": {
+            "usage": "Verify a password matches a user's stored hash",
+            "cmd": "npx tsx scripts/verifyPassword.ts",
+            "params": {
+                "password": {
+                    "type": "string",
+                    "description": "The password to verify",
+                    "required": true,
+                    "addToCmdWithoutKey": true
+                },
+                "user": {
+                    "type": "string",
+                    "description": "Username to check against",
+                    "required": true
+                }
+            }
+        }
+    },
     "prompts": {},
     "resources": {}
 }

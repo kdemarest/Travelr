@@ -3,6 +3,6 @@
   "whoServesStaticFiles": "express",
   "port": 5000,
   "writeDiagnosticFiles": true,
-  "hotReloadAllowed": true,
+  "deployQuickAllowed": true,
   "isTest": true
 }

@@ -186,8 +186,8 @@ function printUsage() {
     "  --resume               Resume the App Runner service",
     "  --status               Display the App Runner service status and exit",
     "  --wait                 Wait for in-progress operations to complete (use with --status)",
-    "  --quick                Hot reload: zip source files and POST to running server",
-    "  --test                 Test mode: run hot reload but don't restart server (use with --quick)",
+    "  --quick                Quick deploy: zip source files and POST to running server",
+    "  --test                 Test mode: run quick deploy but don't restart server (use with --quick)",
     "  --local                Target local dev server instead of AWS (use with --quick)",
     "  --verbose, -v          Stream full command output",
     "  --help, -help, help, ? Show this usage information",
@@ -197,7 +197,7 @@ function printUsage() {
     "  node deploy.js --stop",
     "  node deploy.js --status --wait",
     "  node deploy.js --quick                    (fast deploy without Docker rebuild)",
-    "  node deploy.js --quick --test --local     (test hot reload against local server)"
+    "  node deploy.js --quick --test --local     (test quick deploy against local server)"
   ];
   log("");
   lines.forEach((line) => log(`  ${line}`, colors.gray));
@@ -217,13 +217,41 @@ function exec(command, options = {}) {
   }
   
   try {
+    // Always capture output so we can log it to file
+    // In verbose mode, also print to console
     const result = execSync(command, {
       encoding: "utf-8",
-      stdio: options.silent ? "pipe" : (isVerbose ? "inherit" : "pipe"),
+      stdio: "pipe",
       ...options
     });
-    return result?.trim() ?? "";
+    const output = result?.trim() ?? "";
+    
+    // In verbose mode, print output to console and always log to file
+    if (isVerbose && output) {
+      console.log(output);
+    }
+    if (output) {
+      logStream.write(output + "\n");
+    }
+    
+    return output;
   } catch (error) {
+    // Capture stderr/stdout from failed commands too
+    if (error.stdout) {
+      const stdout = error.stdout.toString().trim();
+      if (stdout) {
+        if (isVerbose) console.log(stdout);
+        logStream.write(stdout + "\n");
+      }
+    }
+    if (error.stderr) {
+      const stderr = error.stderr.toString().trim();
+      if (stderr) {
+        if (isVerbose) console.error(stderr);
+        logStream.write(stderr + "\n");
+      }
+    }
+    
     if (options.ignoreError) {
       logWarning(`Command failed (ignored): ${error.message}`);
       return "";
@@ -677,8 +705,9 @@ function buildDockerImage(secrets) {
   
   const imageTag = `${CONFIG.appName}:latest`;
   
-  // Build the image
-  const buildCmd = `docker build -f deploy/Dockerfile -t ${imageTag} .`;
+  // Build the image with --no-cache to ensure we get a fresh image
+  // This prevents AWS from skipping the deployment due to identical image digest
+  const buildCmd = `docker build --no-cache -f deploy/Dockerfile -t ${imageTag} .`;
   exec(buildCmd);
   
   logSuccess(`Built image: ${imageTag}`);
@@ -931,6 +960,24 @@ function deployToAppRunner(imageUri, instanceRoleArn) {
   // Add S3 bucket name to environment so the app knows where to persist
   runtimeEnvVars["TRAVELR_S3_BUCKET"] = CONFIG.s3Bucket;
   
+  // Hash system user passwords for production
+  // System users auth directly against these hashes - no session tokens needed
+  const systemUserEnvs = [
+    { pwdEnvVar: "TRAVELR_ADMIN_PWD", hashEnvVar: "TRAVELR_ADMIN_PWDHASH" },
+    { pwdEnvVar: "TRAVELR_DEPLOYBOT_PWD", hashEnvVar: "TRAVELR_DEPLOYBOT_PWDHASH" },
+    { pwdEnvVar: "TRAVELR_TESTBOT_PWD", hashEnvVar: "TRAVELR_TESTBOT_PWDHASH" },
+  ];
+  
+  for (const { pwdEnvVar, hashEnvVar } of systemUserEnvs) {
+    const pwd = process.env[pwdEnvVar];
+    if (pwd) {
+      log(`  Hashing ${pwdEnvVar}...`);
+      const salt = crypto.randomBytes(16).toString("hex");
+      const derivedKey = crypto.scryptSync(pwd, salt, 64);
+      runtimeEnvVars[hashEnvVar] = `${salt}:${derivedKey.toString("hex")}`;
+    }
+  }
+  
   // Ensure App Runner ECR access role exists
   const accessRoleName = "AppRunnerECRAccessRole";
   const accessRoleArn = ensureAppRunnerAccessRole(accessRoleName);
@@ -967,9 +1014,31 @@ function deployToAppRunner(imageUri, instanceRoleArn) {
     // Update existing service
     logInfo("Updating existing App Runner service...");
     
+    // Get the latest operation timestamp BEFORE update so we can verify a new one was created
+    const preUpdateOpsCmd = `aws apprunner list-operations --service-arn ${existingArn} --region ${CONFIG.awsRegion} --query "OperationSummaryList[0].StartedAt" --output text`;
+    const preUpdateLatestOp = execWithOutput(preUpdateOpsCmd, { ignoreError: true })?.trim() || "";
+    
     const updateCmd = `aws apprunner update-service --service-arn ${existingArn} --source-configuration file://${configPath.replace(/\\/g, '/')} --instance-configuration file://${instanceConfigPath.replace(/\\/g, '/')} --region ${CONFIG.awsRegion}`;
     retryOnOperationInProgress(updateCmd, "update");
-    logSuccess("Service update initiated");
+    
+    // Verify a new operation was actually created
+    sleep(2000); // Give AWS a moment to register the operation
+    const postUpdateLatestOp = execWithOutput(preUpdateOpsCmd, { ignoreError: true })?.trim() || "";
+    
+    if (postUpdateLatestOp === preUpdateLatestOp) {
+      // update-service didn't trigger a deployment - force one with start-deployment
+      logWarning("update-service did not trigger a new deployment - forcing with start-deployment...");
+      const startDeployCmd = `aws apprunner start-deployment --service-arn ${existingArn} --region ${CONFIG.awsRegion}`;
+      try {
+        exec(startDeployCmd);
+        logSuccess("Deployment started");
+      } catch (error) {
+        logError(`Failed to start deployment: ${error.message}`);
+        throw error;
+      }
+    } else {
+      logSuccess("Service update initiated");
+    }
     logInfo(`Service ARN: ${existingArn}`);
   } else {
     // Create new service
@@ -1196,160 +1265,25 @@ function reportAppRunnerStatus() {
 }
 
 // ============================================================================
-// Quick Deploy (Hot Reload)
+// Quick Deploy
 // ============================================================================
 
 /**
- * Create a zip file of source files for hot reload.
- * Calls the shared script to ensure consistency between deploy and test.
+ * Quick deploy - uses @jeesty/ops deployQuick
  */
-async function createDeploymentZip() {
-  const { createDeploymentZip: createZip } = await import("./scripts/create-deploy-zip.ts");
-  // Pass __dirname as sourceRoot - deploy.js runs from the real code directory
-  return createZip(__dirname);
-}
-
 async function quickDeploy() {
-  logStep(1, isTestMode ? "Quick Deploy - TEST MODE" : "Quick Deploy - Hot Reload");
+  logStep(1, "Quick Deploy");
   
-  let baseUrl;
+  // Dynamically import the ops package
+  const { deployQuick: opsDeployQuick } = await import("./ops/src/deploy-quick.js");
   
-  if (isLocalTarget) {
-    // Target local dev server
-    baseUrl = "http://localhost:4000";
-    logInfo(`Target server: ${baseUrl} (local)`);
-  } else {
-    // Get service URL from AWS
-    const urlCmd = `aws apprunner list-services --region ${CONFIG.awsRegion} --query "ServiceSummaryList[?ServiceName=='${CONFIG.appRunnerService}'].ServiceUrl" --output text`;
-    const serviceUrl = execWithOutput(urlCmd, { ignoreError: true, allowInDryRun: true });
-    
-    if (!serviceUrl || serviceUrl === "None" || serviceUrl.trim().length === 0) {
-      throw new Error("No App Runner service found. Run a full deploy first.");
-    }
-    
-    baseUrl = `https://${serviceUrl.trim()}`;
-    logInfo(`Target server: ${baseUrl}`);
-  }
-  
-  // Get deploybot credentials
-  const deployUser = "deploybot";
-  const deployPassword = process.env.TRAVELR_DEPLOYBOT_PWD;
-  
-  if (!deployPassword) {
-    throw new Error("TRAVELR_DEPLOYBOT_PWD environment variable not set");
-  }
-  
-  // Step 1: Login to get auth key
-  logInfo("Authenticating as deploybot...");
-  
-  const loginResponse = await fetch(`${baseUrl}/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user: deployUser,
-      password: deployPassword,
-      deviceId: "quick-deploy"
-    })
+  const result = await opsDeployQuick({
+    log: (msg) => logInfo(msg)
   });
   
-  if (!loginResponse.ok) {
-    const text = await loginResponse.text();
-    throw new Error(`Login failed: ${loginResponse.status} - ${text}`);
+  if (!result.ok) {
+    throw new Error(result.error || "Quick deploy failed");
   }
-  
-  const loginData = await loginResponse.json();
-  if (!loginData.ok || !loginData.authKey) {
-    throw new Error(`Login failed: ${loginData.error || "No authKey returned"}`);
-  }
-  
-  logSuccess("Authenticated");
-  const authKey = loginData.authKey;
-  
-  // Step 2: Create deployment zip
-  logInfo("Creating deployment zip...");
-  const zipPath = await createDeploymentZip();
-  const zipStats = fs.statSync(zipPath);
-  logSuccess(`Created zip: ${(zipStats.size / 1024).toFixed(1)} KB`);
-  
-  // Step 3: Send hot-reload request
-  logInfo(isTestMode ? "Sending hot-reload TEST request..." : "Sending hot-reload request...");
-  
-  const testParam = isTestMode ? "&test=true" : "";
-  const hotReloadUrl = `${baseUrl}/admin/hot-reload?user=${deployUser}&deviceId=quick-deploy&authKey=${encodeURIComponent(authKey)}${testParam}`;
-  const zipBuffer = fs.readFileSync(zipPath);
-  
-  // Compute MD5 for integrity verification
-  const zipMd5 = crypto.createHash("md5").update(zipBuffer).digest("hex");
-  logInfo(`Zip MD5: ${zipMd5}`);
-  
-  const hotReloadResponse = await fetch(hotReloadUrl, {
-    method: "POST",
-    headers: { 
-      "Content-Type": "application/octet-stream",
-      "Content-Length": String(zipBuffer.length),
-      "X-Content-MD5": zipMd5
-    },
-    body: zipBuffer
-  });
-  
-  // Clean up zip file
-  fs.unlinkSync(zipPath);
-  
-  if (!hotReloadResponse.ok) {
-    const text = await hotReloadResponse.text();
-    throw new Error(`Hot reload failed: ${hotReloadResponse.status} - ${text}`);
-  }
-  
-  const hotReloadData = await hotReloadResponse.json();
-  if (!hotReloadData.ok) {
-    throw new Error(`Hot reload failed: ${hotReloadData.error}`);
-  }
-  
-  logSuccess(`Hot reload ${isTestMode ? "TEST " : ""}initiated (relaunch PID: ${hotReloadData.relaunchPid})`);
-  if (hotReloadData.logFile) {
-    logInfo(`Relaunch log: ${hotReloadData.logFile}`);
-  }
-  
-  // In test mode, we're done - server doesn't restart
-  if (isTestMode) {
-    logInfo("Test mode - check server logs for file list");
-    logSuccess("Quick deploy test complete");
-    return;
-  }
-  
-  // Step 4: Wait for server to come back up
-  logStep(2, "Waiting for server to restart");
-  
-  const maxWaitMs = 120000; // 2 minutes
-  const pollInterval = 10000; // 10 seconds
-  const startTime = Date.now();
-  
-  // Wait a bit for shutdown
-  logInfo("Waiting for server shutdown...");
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  
-  while (Date.now() - startTime < maxWaitMs) {
-    const elapsed = formatElapsed(Date.now() - startTime);
-    try {
-      const pingResponse = await fetch(`${baseUrl}/ping`, { 
-        signal: AbortSignal.timeout(3000) 
-      });
-      if (pingResponse.ok) {
-        const text = await pingResponse.text();
-        if (text.trim() === "pong") {
-          logInfo(`${elapsed} Server is back up!`);
-          logSuccess("Quick deploy complete");
-          return;
-        }
-      }
-    } catch {
-      // Server not ready yet
-    }
-    logInfo(`${elapsed} Waiting for server...`);
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-  }
-  
-  throw new Error("Timeout waiting for server to restart");
 }
 
 // ============================================================================

@@ -15,7 +15,8 @@
   },
   "workspaces": [
     "server",
-    "client"
+    "client",
+    "ops"
   ],
   "engines": {
     "node": ">=24.10.0"
@@ -29,6 +30,7 @@
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
+    "jeesty-mcp": "^0.4.2",
     "prettier": "^3.6.2",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3"

@@ -1,8 +1,31 @@
 #!/usr/bin/env npx tsx
 /**
- * relaunch.ts - Hot reload helper script
+ * relaunch.ts - Deploy-quick helper script (DEPRECATED)
  * 
- * This script is spawned by the server when it receives a hot-reload request.
+ * ============================================================================
+ * WARNING: THIS APPROACH IS DEPRECATED
+ * ============================================================================
+ * This script was designed to run as a detached process, handling deploy-quick
+ * by waiting for the server to exit, then extracting/building/restarting.
+ * 
+ * It DOES NOT WORK in Docker with dumb-init because:
+ *   1. Server spawns this script detached
+ *   2. Server exits
+ *   3. dumb-init (PID 1) sees its child exit → kills container
+ *   4. This script dies before it can do anything
+ * 
+ * The NEW approach uses server-runner.ts:
+ *   - server-runner runs the server as a child
+ *   - Server does extract/build while still running (responds to health checks)
+ *   - Server exits with code 99
+ *   - server-runner sees code 99, restarts the server
+ *   - No separate process, no race conditions
+ * 
+ * This file is kept for reference and may be removed in the future.
+ * ============================================================================
+ * 
+ * Original description:
+ * This script is spawned by the server when it receives a deploy-quick request.
  * It runs as a detached process and:
  * 1. Waits for the server to shut down (PID file disappears)
  * 2. Extracts the new code from the zip
@@ -83,8 +106,12 @@ let statusServer: http.Server | null = null;
 function startStatusServer(port: number = 80): Promise<void> {
   return new Promise((resolve, reject) => {
     statusServer = http.createServer((req, res) => {
-      // Only respond to our status endpoint (same path as real server)
-      if (req.url?.startsWith("/admin/hot-reload-status")) {
+      // Respond to /ping with 200 to keep AppRunner health checks happy
+      if (req.url === "/ping") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("pong (relaunch in progress)");
+      } else if (req.url?.startsWith("/admin/deploy-quick-status")) {
+        // Serve our log file for monitoring
         res.writeHead(200, { "Content-Type": "text/plain" });
         try {
           const logContent = fs.readFileSync(LOG_FILE, "utf-8");
@@ -95,7 +122,7 @@ function startStatusServer(port: number = 80): Promise<void> {
       } else {
         // For any other request, return 503 with a helpful message
         res.writeHead(503, { "Content-Type": "text/plain" });
-        res.end("[RELAUNCH]\nServer is restarting. Check /admin/hot-reload-status for progress.\n");
+        res.end("[RELAUNCH]\nServer is restarting. Check /admin/deploy-quick-status for progress.\n");
       }
     });
 
@@ -176,7 +203,7 @@ async function launchServerWithRecovery(): Promise<boolean> {
     
     if (statusServer) {
       log(`Status server restarted on port ${statusPort}`);
-      log("Query /api/admin/hot-reload-status to see this log.");
+      log("Query /api/admin/deploy-quick-status to see this log.");
       log("Waiting indefinitely... (Ctrl+C or kill to exit)");
       await new Promise(() => {}); // Never resolves
     }
@@ -323,6 +350,10 @@ async function main() {
       process.exit(1);
     }
     
+    // Give OS time to fully release the port after process exits
+    log("Waiting for port to be released...");
+    await sleep(2000);
+    
     // Step 2: Start minimal status server so deploy.js can see our progress
     // Skip in test mode on Windows if port 80 (requires admin)
     if (testMode && statusPort === 80) {
@@ -433,7 +464,7 @@ async function main() {
       log("Code on disk may be corrupt or incomplete.");
       log("DO NOT restart server - manual intervention required.");
       log(`Status server will keep running on port ${statusPort} for diagnostics.`);
-      log("Query /api/admin/hot-reload-status to see this log.");
+      log("Query /api/admin/deploy-quick-status to see this log.");
       log("=".repeat(60));
       
       // Keep the status server running forever so operator can diagnose
@@ -457,7 +488,7 @@ async function main() {
     
     // If we get here, server was launched successfully
     log("Server restarted after safe failure.");
-    process.exit(1); // Exit with error code since hot-reload failed
+    process.exit(1); // Exit with error code since deploy-quick failed
   }
 }
 

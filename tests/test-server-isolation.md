@@ -94,7 +94,7 @@ travelr/
        "whoServesStaticFiles": "express",
        "port": <port>,
        "writeDiagnosticFiles": true,
-       "hotReloadAllowed": true
+       "deployQuickAllowed": true
      }
      ```
 
@@ -153,7 +153,7 @@ Each test instance running from `TEST_5000/` gets its own PID file.
 
 ## Test Script Changes
 
-### test-hot-reload.ts
+### test-deploy-quick.ts
 
 ```typescript
 // Spawn test server and get its port
@@ -190,15 +190,15 @@ interface TestServerHandle {
 
 ```bash
 # Run single test (auto-selects port)
-npx tsx scripts/test-hot-reload.ts
+npx tsx tests/test-deploy-quick.ts
 
 # Run with specific port
-TEST_PORT=5042 npx tsx scripts/test-hot-reload.ts
+TEST_PORT=5042 npx tsx tests/test-deploy-quick.ts
 
 # Run multiple tests in parallel
-TEST_PORT=5000 npx tsx scripts/test-hot-reload.ts &
-TEST_PORT=5001 npx tsx scripts/test-hot-reload.ts &
-TEST_PORT=5002 npx tsx scripts/test-hot-reload.ts &
+TEST_PORT=5000 npx tsx tests/test-deploy-quick.ts &
+TEST_PORT=5001 npx tsx tests/test-deploy-quick.ts &
+TEST_PORT=5002 npx tsx tests/test-deploy-quick.ts &
 wait
 ```
 

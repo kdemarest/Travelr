@@ -1,0 +1,54 @@
+{
+  "$schema": "../ops/jeesty-ops-config.schema.json",
+  
+  "name": "travelr",
+  
+  "aws": {
+    "region": "us-east-1",
+    "s3Bucket": "travelr-persist"
+  },
+  
+  "container": {
+    "port": 4000,
+    "healthCheck": {
+      "path": "/ping",
+      "expected": "pong"
+    }
+  },
+  
+  "auth": {
+    "user": "deploybot",
+    "passwordEnvVar": "TRAVELR_DEPLOYBOT_PWD",
+    "endpoint": "/auth"
+  },
+  
+  "deployQuick": {
+    "endpoint": "/admin/deploy-quick",
+    "restartExitCode": 99,
+    "include": [
+      "server/src/**",
+      "client/src/**",
+      "scripts/**",
+      "ops/src/**",
+      "package.json",
+      "package-lock.json",
+      "tsconfig.base.json",
+      "server/package.json",
+      "server/tsconfig.json",
+      "client/package.json",
+      "client/tsconfig.json",
+      "client/index.html",
+      "client/vite.config.ts",
+      "ops/package.json",
+      "ops/tsconfig.json",
+      "dataConfig/prompt-template.md"
+    ],
+    "exclude": ["TEST_*", "node_modules", "dist", ".git"]
+  },
+  
+  "persist": {
+    "dirs": ["dataTrips", "dataUserPrefs", "dataCountries"]
+  },
+  
+  "secrets": ["OPENAI_API_KEY", "GOOGLE_CS_API_KEY", "GOOGLE_CS_CX"]
+}

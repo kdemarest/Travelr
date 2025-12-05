@@ -27,7 +27,7 @@ export function createChatHandler(tripCache: TripCache) {
       const trip = await tripCache.getTrip(tripName);
       const model = rebuildModel(trip);
       const finalizedModel = finalizeModel(model);
-      const userPreferences = { ...user.prefs.data };
+      const userPreferences = { ...user.prefsFile.data };
 
       // Read conversation history from disk (authoritative source)
       const conversation = trip.conversation;

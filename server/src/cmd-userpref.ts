@@ -46,9 +46,9 @@ function cmdUserpref()
 
     try {
       const normalizedValue = normalizeUserPrefValue(parsed.value);
-      const prefs = ctx.user.prefs;
+      const prefs = ctx.user.prefsFile;
       prefs.data[key] = normalizedValue;
-      prefs.setDirty(prefs.data);
+      prefs.setDirty();
       
       return {
         message: `Stored preference "${key}".`

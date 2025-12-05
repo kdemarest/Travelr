@@ -60,7 +60,7 @@ export class ExchangeRateCatalog {
     } else {
       this.lazyFile.data.push(normalizedRecord);
     }
-    this.lazyFile.setDirty(this.lazyFile.data);
+    this.lazyFile.setDirty();
   }
 
   flush(): void {

@@ -32,7 +32,7 @@ async function main() {
   console.log(`\nPassword: ${password}`);
   console.log(`Hash:     ${hash}`);
   console.log(`\nFor users.json:`);
-  console.log(`  "username": { "password": "${hash}", "isAdmin": false }`);
+  console.log(`  "username": { "passwordHash": "${hash}", "isAdmin": false }`);
 }
 
 main();

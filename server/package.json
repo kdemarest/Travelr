@@ -6,9 +6,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "dev": "nodemon --watch src --ext ts --exec \"tsx src/index.ts\"",
+    "dev": "cd .. && nodemon --watch server/src --ext ts --exec \"tsx server/src/server-runner.ts\"",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "cd .. && node server/dist/server-runner.js",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",

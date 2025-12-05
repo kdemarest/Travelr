@@ -297,7 +297,7 @@ async function executeCommandBatch(
         const chatbotContext: ChatbotContext = {
           tripName,
           tripCache,
-          userPreferences: { ...user.prefs.data },
+          userPreferences: { ...user.prefsFile.data },
           focusSummary,
           markedActivities,
           markedDates,

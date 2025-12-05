@@ -1,7 +1,7 @@
 /**
  * Simple authentication module with multi-device support.
  * 
- * - users.json: { userId: { password, isAdmin } } pairs
+ * - users.json: { userId: { passwordHash, isAdmin } } pairs
  * - auths.json: { userId: { deviceId: { authKey, label, city, firstSeen, lastSeen } } }
  * 
  * Auth flow:
@@ -14,8 +14,7 @@
 import path from "node:path";
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { LazyFile } from "./lazy-file.js";
-import type { User } from "./user.js";
-import { ensureUserPrefsFile } from "./user-preferences.js";
+import { User } from "./user.js";
 import { ClientDataCache } from "./client-data-cache.js";
 import { Paths } from "./data-paths.js";
 
@@ -30,7 +29,7 @@ interface UserState {
 type UserStateFile = Record<string, UserState>;
 
 interface UserEntry {
-  password: string;
+  passwordHash: string;
   isAdmin?: boolean;
 }
 
@@ -55,6 +54,103 @@ const usersFile = new LazyFile<UsersFile>(USERS_FILE, {}, parseJson, toJson);
 const authsFile = new LazyFile<AuthsFile>(AUTHS_FILE, {}, parseJson, toJson);
 const userStateFile = new LazyFile<UserStateFile>(USER_STATE_FILE, {}, parseJson, toJson);
 
+// O(1) lookup cache for Bearer token auth: authKey -> {userId, deviceId}
+const authKeyCache = new Map<string, { userId: string; deviceId: string }>();
+
+// ============================================================================
+// System Users (defined by env vars, never stored in users.json)
+// ============================================================================
+
+interface SystemUser {
+  userId: string;
+  pwdEnvVar: string;      // Plaintext password (dev)
+  hashEnvVar: string;     // Pre-hashed password (prod)
+  isAdmin: boolean;
+}
+
+const SYSTEM_USERS: SystemUser[] = [
+  { userId: "admin", pwdEnvVar: "TRAVELR_ADMIN_PWD", hashEnvVar: "TRAVELR_ADMIN_PWDHASH", isAdmin: true },
+  { userId: "deploybot", pwdEnvVar: "TRAVELR_DEPLOYBOT_PWD", hashEnvVar: "TRAVELR_DEPLOYBOT_PWDHASH", isAdmin: true },
+  { userId: "testbot", pwdEnvVar: "TRAVELR_TESTBOT_PWD", hashEnvVar: "TRAVELR_TESTBOT_PWDHASH", isAdmin: false },
+];
+
+// Cache for system user hashes (computed once from _PWD env vars)
+const systemUserHashCache = new Map<string, string>();
+
+// ============================================================================
+// Unified User Record Lookup
+// ============================================================================
+
+/**
+ * The single source of truth for user records.
+ * Returns a UserEntry for any user - system user or file user.
+ * For system users, constructs the record from env vars.
+ * For file users, looks up in users.json.
+ * Returns null if user doesn't exist or has no password configured.
+ */
+async function getUserRecord(userId: string): Promise<UserEntry | null> {
+  // Check system users first
+  const su = SYSTEM_USERS.find(s => s.userId === userId);
+  if (su) {
+    const hash = await getSystemUserHashInternal(su);
+    if (!hash) return null;
+    return { passwordHash: hash, isAdmin: su.isAdmin };
+  }
+  
+  // File users
+  const entry = usersFile.data[userId];
+  if (!entry) return null;
+  
+  // Handle legacy string format (hash only, not admin)
+  if (typeof entry === "string") {
+    return { passwordHash: entry, isAdmin: false };
+  }
+  
+  return entry;
+}
+
+/**
+ * Get password hash for a system user from env vars.
+ * Checks _PWDHASH first (prod), then hashes _PWD on demand (dev).
+ * Returns null if neither env var is set.
+ */
+async function getSystemUserHashInternal(su: SystemUser): Promise<string | null> {
+  // Check for pre-computed hash first (production)
+  const hashFromEnv = process.env[su.hashEnvVar];
+  if (hashFromEnv) {
+    return hashFromEnv;
+  }
+  
+  // Check cache (avoid re-hashing on every auth)
+  const cached = systemUserHashCache.get(su.userId);
+  if (cached) {
+    return cached;
+  }
+  
+  // Hash from plaintext password (dev)
+  const pwd = process.env[su.pwdEnvVar];
+  if (pwd) {
+    const hash = await hashPassword(pwd);
+    systemUserHashCache.set(su.userId, hash);
+    return hash;
+  }
+  
+  return null;
+}
+
+/**
+ * Rebuild the authKey cache from authsFile data.
+ */
+function rebuildAuthKeyCache(): void {
+  authKeyCache.clear();
+  const auths = authsFile.data;
+  for (const [userId, devices] of Object.entries(auths)) {
+    for (const [deviceId, deviceAuth] of Object.entries(devices)) {
+      authKeyCache.set(deviceAuth.authKey, { userId, deviceId });
+    }
+  }
+}
+
 /**
  * Initialize the auth module. Call once at startup.
  */
@@ -62,6 +158,7 @@ export function initAuth(): void {
   usersFile.load();
   authsFile.load();
   userStateFile.load();
+  rebuildAuthKeyCache();
 }
 
 /**
@@ -73,25 +170,29 @@ export function flushAuth(): void {
   userStateFile.flush();
 }
 
-// Get password for a user (handles both old string format and new object format)
-function getUserPassword(users: UsersFile, userId: string): string | null {
-  const entry = users[userId];
-  if (!entry) return null;
-  if (typeof entry === "string") return entry;  // Old format
-  return entry.password;  // New format
+// Check if user is admin (async - uses getUserRecord)
+async function isUserAdminAsync(userId: string): Promise<boolean> {
+  const record = await getUserRecord(userId);
+  return record?.isAdmin === true;
 }
 
-// Check if user is admin
-function isUserAdmin(users: UsersFile, userId: string): boolean {
-  const entry = users[userId];
+// Sync version for places that can't await (uses cached data only)
+function isUserAdminSync(userId: string): boolean {
+  // Check system users first
+  const su = SYSTEM_USERS.find(s => s.userId === userId);
+  if (su) {
+    return su.isAdmin;
+  }
+  // File users
+  const entry = usersFile.data[userId];
   if (!entry) return false;
-  if (typeof entry === "string") return false;  // Old format = not admin
+  if (typeof entry === "string") return false;
   return entry.isAdmin === true;
 }
 
 // Export for use in admin routes
 export function checkIsAdmin(userId: string): boolean {
-  return isUserAdmin(usersFile.data, userId);
+  return isUserAdminSync(userId);
 }
 
 // Generate a random auth key
@@ -123,7 +224,7 @@ export function setLastTripId(userId: string, tripId: string): void {
     state[userId] = {};
   }
   state[userId].lastTripId = tripId;
-  userStateFile.setDirty(state);
+  userStateFile.setDirty();
 }
 
 // ============================================================================
@@ -203,14 +304,12 @@ export async function login(
   deviceInfo: string,
   ip: string
 ): Promise<string | null> {
-  const users = usersFile.data;
-  const storedHash = getUserPassword(users, userId);
-  
-  if (!storedHash) {
+  const userRecord = await getUserRecord(userId);
+  if (!userRecord) {
     return null;
   }
   
-  const isValid = await verifyPassword(password, storedHash);
+  const isValid = await verifyPassword(password, userRecord.passwordHash);
   if (!isValid) {
     return null;
   }
@@ -232,6 +331,13 @@ export async function login(
   }
   
   const now = today();
+  
+  // Remove old authKey from cache if replacing
+  const oldAuth = auths[userId]?.[deviceId];
+  if (oldAuth) {
+    authKeyCache.delete(oldAuth.authKey);
+  }
+  
   auths[userId][deviceId] = {
     authKey,
     label: deviceInfo || "unknown device",
@@ -240,7 +346,10 @@ export async function login(
     lastSeen: now
   };
   
-  authsFile.setDirty(auths);
+  // Add new authKey to cache
+  authKeyCache.set(authKey, { userId, deviceId });
+  
+  authsFile.setDirty();
   
   return authKey;
 }
@@ -256,14 +365,16 @@ export interface AuthResult {
 /**
  * Validate an existing authKey and return the authenticated user.
  * Also updates lastSeen on successful auth.
+ * 
+ * If deviceId is not provided, auth will still work but lastSeen won't be updated.
  */
-export function authenticateAndFetchUser(userId: string, deviceId: string, authKey: string): AuthResult {
-  if (!userId || !deviceId || !authKey) {
+export function authenticateAndFetchUser(userId: string, deviceId: string | undefined, authKey: string): AuthResult {
+  if (!userId || !authKey) {
     return { valid: false, user: null };
   }
   
   // Ensure proper prefixes
-  if (!deviceId.startsWith("device-")) {
+  if (deviceId && !deviceId.startsWith("device-")) {
     deviceId = "device-" + deviceId;
   }
   if (!authKey.startsWith("auth-")) {
@@ -271,25 +382,35 @@ export function authenticateAndFetchUser(userId: string, deviceId: string, authK
   }
   
   const auths = authsFile.data;
-  const deviceAuth = auths[userId]?.[deviceId];
   
-  if (deviceAuth?.authKey === authKey) {
-    // Update lastSeen
-    deviceAuth.lastSeen = today();
-    authsFile.setDirty(auths);
+  // If deviceId provided, check that specific device
+  if (deviceId) {
+    const deviceAuth = auths[userId]?.[deviceId];
     
-    // Load user prefs on first access
-    const prefs = ensureUserPrefsFile(userId);
-    
-    return {
-      valid: true,
-      user: {
-        userId,
-        isAdmin: isUserAdmin(usersFile.data, userId),
-        prefs,
-        clientDataCache: new ClientDataCache()
+    if (deviceAuth?.authKey === authKey) {
+      // Update lastSeen
+      deviceAuth.lastSeen = today();
+      authsFile.setDirty();
+      
+      return {
+        valid: true,
+        user: new User(userId, isUserAdminSync(userId), new ClientDataCache())
+      };
+    }
+  } else {
+    // No deviceId - check if authKey matches ANY device for this user
+    const userAuths = auths[userId];
+    if (userAuths) {
+      for (const deviceAuth of Object.values(userAuths)) {
+        if (deviceAuth.authKey === authKey) {
+          // Valid auth, but don't update lastSeen without knowing which device
+          return {
+            valid: true,
+            user: new User(userId, isUserAdminSync(userId), new ClientDataCache())
+          };
+        }
       }
-    };
+    }
   }
   
   return { valid: false, user: null };
@@ -304,13 +425,16 @@ export function logout(userId: string, deviceId: string): void {
   }
   
   const auths = authsFile.data;
-  if (auths[userId]) {
+  if (auths[userId]?.[deviceId]) {
+    // Remove from cache
+    authKeyCache.delete(auths[userId][deviceId].authKey);
+    
     delete auths[userId][deviceId];
     // Clean up empty user entries
     if (Object.keys(auths[userId]).length === 0) {
       delete auths[userId];
     }
-    authsFile.setDirty(auths);
+    authsFile.setDirty();
   }
 }
 
@@ -331,14 +455,129 @@ export function getDevices(userId: string): Array<{ deviceId: string; label: str
 }
 
 /**
- * Check if the auth system is properly configured (has at least one user).
+ * Authenticate using a Bearer token (authKey only, no user/device needed).
+ * Uses O(1) cache lookup. Returns User if valid, null if invalid.
+ */
+export function authenticateWithBearerToken(authKey: string): User | null {
+  if (!authKey) {
+    return null;
+  }
+  
+  const cached = authKeyCache.get(authKey);
+  if (!cached) {
+    return null;
+  }
+  
+  const { userId, deviceId } = cached;
+  
+  // Update lastSeen
+  const auths = authsFile.data;
+  const deviceAuth = auths[userId]?.[deviceId];
+  if (deviceAuth) {
+    deviceAuth.lastSeen = today();
+    authsFile.setDirty();
+  }
+  
+  return new User(userId, isUserAdminSync(userId), new ClientDataCache());
+}
+
+/**
+ * Check if the auth system is properly configured.
+ * Requires admin user to be configured (TRAVELR_ADMIN_PWD or TRAVELR_ADMIN_PWDHASH).
  * If this returns false, the server should refuse to start.
  */
 export function isAuthConfigured(): boolean {
-  const users = usersFile.data;
-  const hasUsers = Object.keys(users).length > 0;
-  if (!hasUsers) {
-    console.error("[isAuthConfigured] FATAL: No users configured in", USERS_FILE);
+  // Admin user is required
+  const adminUser = SYSTEM_USERS.find(su => su.userId === "admin");
+  if (!adminUser) {
+    console.error("[isAuthConfigured] FATAL: No admin user defined in SYSTEM_USERS");
+    return false;
   }
-  return hasUsers;
+  
+  const hasAdmin = !!(process.env[adminUser.hashEnvVar] || process.env[adminUser.pwdEnvVar]);
+  
+  if (!hasAdmin) {
+    console.error("[isAuthConfigured] FATAL: Admin user not configured.");
+    console.error(`  - Set ${adminUser.pwdEnvVar} (dev) or ${adminUser.hashEnvVar} (prod)`);
+  }
+  
+  return hasAdmin;
+}
+
+/**
+ * Authenticate a user directly with password (no device/authKey required).
+ * Useful for single API calls from scripts or automation.
+ * Returns a User object if valid, null if invalid.
+ */
+export async function authenticateWithPassword(userId: string, password: string): Promise<User | null> {
+  const result = await authenticateWithPasswordDebug(userId, password);
+  return result.user;
+}
+
+/**
+ * Debug version of authenticateWithPassword that returns detailed info about why auth failed.
+ */
+export async function authenticateWithPasswordDebug(userId: string, password: string): Promise<{
+  user: User | null;
+  debug: Record<string, unknown>;
+}> {
+  const debug: Record<string, unknown> = {
+    userId,
+    passwordProvided: !!password,
+    passwordLength: password?.length ?? 0,
+  };
+
+  if (!userId || !password) {
+    debug.failReason = "Missing userId or password";
+    debug.stack = new Error().stack;
+    return { user: null, debug };
+  }
+
+  const userRecord = await getUserRecord(userId);
+  debug.userRecordFound = !!userRecord;
+  
+  if (!userRecord) {
+    debug.failReason = "User record not found";
+    debug.stack = new Error().stack;
+    // Check if it's a system user and why it might have failed
+    const su = SYSTEM_USERS.find(s => s.userId === userId);
+    if (su) {
+      debug.isSystemUser = true;
+      debug.hashEnvVar = su.hashEnvVar;
+      debug.pwdEnvVar = su.pwdEnvVar;
+      debug.hashEnvVarSet = !!process.env[su.hashEnvVar];
+      debug.hashEnvVarLength = process.env[su.hashEnvVar]?.length ?? 0;
+      debug.hashEnvVarPreview = process.env[su.hashEnvVar] ? process.env[su.hashEnvVar]!.substring(0, 20) + "..." : null;
+      debug.pwdEnvVarSet = !!process.env[su.pwdEnvVar];
+    } else {
+      debug.isSystemUser = false;
+    }
+    return { user: null, debug };
+  }
+
+  debug.hashLength = userRecord.passwordHash?.length ?? 0;
+  debug.hashPreview = userRecord.passwordHash ? userRecord.passwordHash.substring(0, 20) + "..." : null;
+  debug.hashFormat = userRecord.passwordHash?.includes(":") ? "salt:hash" : "unknown";
+  debug.isAdmin = userRecord.isAdmin;
+
+  try {
+    const valid = await verifyPassword(password, userRecord.passwordHash);
+    debug.passwordValid = valid;
+    
+    if (!valid) {
+      debug.failReason = "Password verification failed";
+      debug.stack = new Error().stack;
+      return { user: null, debug };
+    }
+
+    return { 
+      user: new User(userId, userRecord.isAdmin === true, new ClientDataCache()),
+      debug: { ...debug, success: true }
+    };
+  } catch (err) {
+    debug.failReason = "Password verification threw error";
+    debug.error = err instanceof Error ? err.message : String(err);
+    debug.stack = err instanceof Error ? err.stack : new Error().stack;
+    return { user: null, debug };
+  }
 }

@@ -40,7 +40,7 @@ import { createCommandRouteHandler } from "./api-command.js";
 import { createAlarmsRouter } from "./api-alarms.js";
 import { gptQueue } from "./gpt-queue.js";
 import { checkSecretsOnStartup } from "./secrets.js";
-import { login, authenticateAndFetchUser, logout, isAuthConfigured, initAuth, flushAuth, getLastTripId } from "./auth.js";
+import { login, authenticateAndFetchUser, authenticateWithPassword, authenticateWithPasswordDebug, authenticateWithBearerToken, logout, isAuthConfigured, initAuth, flushAuth, getLastTripId } from "./auth.js";
 import { flushUserPreferences } from "./user-preferences.js";
 import { populateBootstrapData } from "./cache-population.js";
 import type { User } from "./user.js";
@@ -102,6 +102,27 @@ async function bootstrap() {
 
   app.get("/ping", (_req, res) => {
     res.send("pong");
+  });
+
+  // Version endpoint - reports deployed version from version.txt
+  app.get("/version", (_req, res) => {
+    try {
+      const versionPath = path.join(process.cwd(), "version.txt");
+      const version = fs.readFileSync(versionPath, "utf-8").trim();
+      res.send(version);
+    } catch {
+      res.send("unknown");
+    }
+  });
+
+  // Debug endpoint to check what headers are received (before auth)
+  app.get("/debug/headers", (req, res) => {
+    res.json({
+      "x-auth-user": req.headers["x-auth-user"] ?? null,
+      "x-auth-password": req.headers["x-auth-password"] ? "[PRESENT]" : null,
+      "x-auth-key": req.headers["x-auth-key"] ?? null,
+      "authorization": req.headers["authorization"] ? "[PRESENT]" : null,
+    });
   });
 
   // =========================================================================
@@ -194,14 +215,80 @@ async function bootstrap() {
 
   // =========================================================================
   // Auth middleware - protects EVERYTHING below this point
+  // Supports four modes:
+  // 1. Token auth: x-auth-user + x-auth-key (+ optional x-auth-device)
+  // 2. Direct password auth: x-auth-user + x-auth-password (for single API calls)
+  // 3. Basic auth: Authorization: Basic base64(user:password)
+  // 4. Bearer auth: Authorization: Bearer <authKey>
   // =========================================================================
   
-  const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    // Check for auth in headers or query params
+  const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+    let userHeader = req.headers["x-auth-user"] as string || req.query.user as string;
+    let password = req.headers["x-auth-password"] as string;
     const authKey = req.headers["x-auth-key"] as string || req.query.authKey as string;
-    const userHeader = req.headers["x-auth-user"] as string || req.query.user as string;
     const deviceId = req.headers["x-auth-device"] as string || req.query.deviceId as string;
     
+    const authHeader = req.headers["authorization"] as string;
+
+    // Build debug context for auth failures
+    const debugContext = {
+      path: req.path,
+      method: req.method,
+      hasUserHeader: !!userHeader,
+      userHeader: userHeader || null,
+      hasPassword: !!password,
+      passwordLength: password?.length ?? 0,
+      hasAuthKey: !!authKey,
+      hasDeviceId: !!deviceId,
+      hasAuthHeader: !!authHeader,
+      authHeaderType: authHeader?.split(" ")[0] ?? null,
+    };
+    
+    // Check for Bearer auth: Authorization: Bearer <authKey>
+    if (authHeader?.startsWith("Bearer ")) {
+      const bearerToken = authHeader.slice(7);
+      const user = authenticateWithBearerToken(bearerToken);
+      if (user) {
+        (req as AuthenticatedRequest).user = user;
+        return next();
+      }
+      return res.status(401).json({ ok: false, error: "Invalid bearer token", debug: debugContext });
+    }
+    
+    // Check for Basic auth header: Authorization: Basic base64(user:password)
+    if (authHeader?.startsWith("Basic ")) {
+      try {
+        const base64 = authHeader.slice(6);
+        const decoded = Buffer.from(base64, "base64").toString("utf-8");
+        const colonIndex = decoded.indexOf(":");
+        if (colonIndex > 0) {
+          userHeader = decoded.slice(0, colonIndex);
+          password = decoded.slice(colonIndex + 1);
+          debugContext.userHeader = userHeader;
+          debugContext.hasUserHeader = true;
+          debugContext.hasPassword = true;
+          debugContext.passwordLength = password.length;
+        }
+      } catch {
+        // Ignore malformed Basic auth, fall through to other methods
+      }
+    }
+    
+    // Try direct password auth first (for single API calls from scripts)
+    if (userHeader && password) {
+      const result = await authenticateWithPasswordDebug(userHeader, password);
+      if (result.user) {
+        (req as AuthenticatedRequest).user = result.user;
+        return next();
+      }
+      return res.status(401).json({ 
+        ok: false, 
+        error: "Invalid username or password",
+        debug: { ...debugContext, ...result.debug }
+      });
+    }
+    
+    // Fall back to token-based auth
     const { valid, user } = authenticateAndFetchUser(userHeader, deviceId, authKey);
     if (valid && user) {
       // Attach user to request for downstream handlers
@@ -209,8 +296,15 @@ async function bootstrap() {
       return next();
     }
     
-    // Not authenticated - return 401
-    res.status(401).json({ ok: false, error: "Authentication required" });
+    // Not authenticated - return 401 with full debug info
+    res.status(401).json({ 
+      ok: false, 
+      error: "Authentication required",
+      debug: {
+        ...debugContext,
+        reason: !userHeader ? "No user header" : !password && !authKey ? "No password or auth key" : "Token auth failed",
+      }
+    });
   };
 
   // Apply auth middleware globally (everything after this requires auth)
@@ -235,6 +329,11 @@ async function bootstrap() {
   // Admin routes (protected by isAdmin check)
   // =========================================================================
   app.use("/admin", adminRouter);
+
+  // Simple auth test endpoint
+  app.get("/api/testauth", (_req, res) => {
+    res.send("success");
+  });
 
   // Mount alarms router (for mobile app polling)
   app.use("/api", createAlarmsRouter(tripCache));
@@ -307,7 +406,7 @@ async function bootstrap() {
   const server = app.listen(port, () => {
     console.log(`Travelr API listening on http://localhost:${port}`);
     
-    // Write PID file for hot-reload detection
+    // Write PID file for quick deploy detection
     writePidFile();
     
     // Start periodic S3 sync (every 10 minutes)

@@ -14,10 +14,7 @@
 import { scrypt, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { findProjectRoot } from "../ops/src/index.js";
 
 async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   const [salt, hash] = storedHash.split(":");
@@ -52,7 +49,8 @@ async function main() {
       process.exit(1);
     }
 
-    const usersPath = path.join(__dirname, "..", "dataUsers", "users.json");
+    const projectRoot = findProjectRoot();
+    const usersPath = path.join(projectRoot, "dataUsers", "users.json");
     if (!fs.existsSync(usersPath)) {
       console.error(`Error: users.json not found at ${usersPath}`);
       process.exit(1);
@@ -66,7 +64,7 @@ async function main() {
       process.exit(1);
     }
 
-    storedHash = user.password;
+    storedHash = user.passwordHash;
     label = `user '${username}'`;
   } else {
     storedHash = args[1];

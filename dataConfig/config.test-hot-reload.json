@@ -3,5 +3,5 @@
   "whoServesStaticFiles": "express",
   "port": 4001,
   "writeDiagnosticFiles": true,
-  "hotReloadAllowed": true
+  "deployQuickAllowed": true
 }

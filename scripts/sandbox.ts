@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * testsvr.ts - Spawn an isolated test server
+ * sandbox.ts - Spawn an isolated test server
  * 
  * PURPOSE:
  * Creates a fully isolated test environment that behaves identically to production.
@@ -11,7 +11,7 @@
  * 1. Selects an available port from 60000-60999 (checks for existing TEST_<port>/ dirs)
  * 2. Creates testDirs/TEST_<port>/ directory
  * 3. Copies data directories (dataUsers/, dataTrips/, etc.) into TEST_<port>/
- * 4. If -copycode flag: also copies scripts/, server/, client/ (needed for hot-reload tests)
+ * 4. If -copycode flag: also copies scripts/, server/, client/ (needed for deploy-quick tests)
  * 5. Generates config.test.json with the selected port
  * 6. Builds the server (npm run build in server/)
  * 7. Starts the server FROM the test directory (so __dirname paths resolve there)
@@ -21,10 +21,10 @@
  * The selected port is communicated to the parent process via stdout:
  *   - When server is ready, prints "READY <port>" to stdout (e.g., "READY 5000")
  *   - Parent should parse this line to discover which port was assigned
- *   - All other output goes to stderr (prefixed with [testsvr])
+ *   - All other output goes to stderr (prefixed with [sandbox])
  * 
  * Example parent code:
- *   const proc = spawn("npx", ["tsx", "scripts/testsvr.ts"]);
+ *   const proc = spawn("npx", ["tsx", "scripts/sandbox.ts"]);
  *   proc.stdout.on("data", (data) => {
  *     const match = data.toString().match(/READY\s+(\d+)/);
  *     if (match) {
@@ -39,13 +39,13 @@
  * - Manually delete TEST_<port>/ when done
  * 
  * Usage:
- *   npx tsx scripts/testsvr.ts                    # Show usage
- *   npx tsx scripts/testsvr.ts -spawn             # Auto-select port, spawn server
- *   npx tsx scripts/testsvr.ts -spawn -copycode   # Also copy server/, client/
- *   npx tsx scripts/testsvr.ts -list              # List all test servers in 60000-60999 range
- *   npx tsx scripts/testsvr.ts -kill 60001        # Kill server on port 60001
- *   npx tsx scripts/testsvr.ts -remove 60001      # Kill server AND delete testDirs/TEST_60001/
- *   TEST_PORT=60042 npx tsx scripts/testsvr.ts -spawn  # Use specific port
+ *   npx tsx scripts/sandbox.ts                    # Show usage
+ *   npx tsx scripts/sandbox.ts -spawn             # Auto-select port, spawn server
+ *   npx tsx scripts/sandbox.ts -spawn -copycode   # Also copy server/, client/
+ *   npx tsx scripts/sandbox.ts -list              # List all test servers in 60000-60999 range
+ *   npx tsx scripts/sandbox.ts -kill 60001        # Kill server on port 60001
+ *   npx tsx scripts/sandbox.ts -remove 60001      # Kill server AND delete testDirs/TEST_60001/
+ *   TEST_PORT=60042 npx tsx scripts/sandbox.ts -spawn  # Use specific port
  */
 
 import { spawn, ChildProcess, execSync } from "node:child_process";
@@ -268,7 +268,7 @@ let testDir: string;
 let serverProcess: ChildProcess | null = null;
 
 function showUsage(): void {
-  console.log(`Usage: testsvr <command> [options]
+  console.log(`Usage: sandbox <command> [options]
 
 Commands:
   -spawn [-copycode]   Start a new isolated test server
@@ -278,11 +278,11 @@ Commands:
   -remove <port>       Kill and remove test server directory
 
 Examples:
-  testsvr -spawn
-  testsvr -spawn -copycode
-  testsvr -list
-  testsvr -kill ${PORT_MIN + 1}
-  testsvr -remove ${PORT_MIN + 1}
+  sandbox -spawn
+  sandbox -spawn -copycode
+  sandbox -list
+  sandbox -kill ${PORT_MIN + 1}
+  sandbox -remove ${PORT_MIN + 1}
 `);
 }
 
@@ -295,7 +295,7 @@ if (args.length === 0) {
   const idx = args.indexOf("-kill");
   const port = parseInt(args[idx + 1], 10);
   if (isNaN(port) || port < PORT_MIN || port > PORT_MAX) {
-    console.error(`Usage: testsvr -kill <port>  (port must be ${PORT_MIN}-${PORT_MAX})`);
+    console.error(`Usage: sandbox -kill <port>  (port must be ${PORT_MIN}-${PORT_MAX})`);
     process.exit(1);
   }
   killServer(port).then(ok => process.exit(ok ? 0 : 1));
@@ -303,7 +303,7 @@ if (args.length === 0) {
   const idx = args.indexOf("-remove");
   const port = parseInt(args[idx + 1], 10);
   if (isNaN(port) || port < PORT_MIN || port > PORT_MAX) {
-    console.error(`Usage: testsvr -remove <port>  (port must be ${PORT_MIN}-${PORT_MAX})`);
+    console.error(`Usage: sandbox -remove <port>  (port must be ${PORT_MIN}-${PORT_MAX})`);
     process.exit(1);
   }
   removeServer(port).then(ok => process.exit(ok ? 0 : 1));
@@ -320,7 +320,7 @@ if (args.length === 0) {
 // ============================================================================
 
 function log(msg: string) {
-  console.error(`[testsvr] ${msg}`);
+  console.error(`[sandbox] ${msg}`);
 }
 
 /**
@@ -490,6 +490,10 @@ function startServer(): void {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     GOOGLE_CS_API_KEY: process.env.GOOGLE_CS_API_KEY,
     GOOGLE_CS_CX: process.env.GOOGLE_CS_CX,
+    // Auth passwords for system users (required for server to start)
+    TRAVELR_ADMIN_PWD: process.env.TRAVELR_ADMIN_PWD,
+    TRAVELR_DEPLOYBOT_PWD: process.env.TRAVELR_DEPLOYBOT_PWD,
+    TRAVELR_TESTBOT_PWD: process.env.TRAVELR_TESTBOT_PWD,
     // Use the test config we generated
     TRAVELR_CONFIG: "test"
   };
@@ -506,16 +510,36 @@ function startServer(): void {
   //   * Without -copycode: Uses CODE_ROOT's server/dist/. The test runs the REAL
   //     server code, just with isolated data. Good for most tests.
   //   * With -copycode: Uses testDir's server/dist/. The test runs a COPY of the
-  //     server code. Required for hot-reload tests, where relaunch.ts will
+  //     server code. Required for deploy-quick tests, where the server will
   //     overwrite files in testDir and restart. If we ran from CODE_ROOT, the
-  //     hot-reload would overwrite real code!
+  //     deploy-quick would overwrite real code!
+  //
+  // ============================================================================
+  // WARNING: MANUAL DEBUGGING OF SANDBOX SERVERS
+  // ============================================================================
+  // If you're debugging a sandbox server failure by running it manually, you MUST
+  // set the environment variables that sandbox.ts normally sets:
+  //
+  //   WRONG: cd testDirs\TEST_60008; node server/dist/server-runner.js
+  //          (Uses config.dev-win11.json, port 4000, wrong config!)
+  //
+  //   RIGHT: cd testDirs\TEST_60008
+  //          $env:TRAVELR_CONFIG="test"
+  //          node server/dist/server-runner.js
+  //          (Uses config.test.json with correct port)
+  //
+  // The sandbox sets TRAVELR_CONFIG="test" in the env passed to spawn().
+  // ============================================================================
+  //
+  // We use server-runner.js instead of index.js so deploy-quick works correctly.
+  // server-runner watches for exit code 99 and restarts the server.
   //
   const serverRoot = copyCode ? testDir : CODE_ROOT;
-  const serverScript = path.join(serverRoot, "server", "dist", "index.js");
+  const serverScript = path.join(serverRoot, "server", "dist", "server-runner.js");
   
   // On Windows, we need fully detached stdio for the process to survive parent exit.
   // Server output goes to a diagnostic log file for later analysis if needed.
-  const logFile = path.join(CODE_ROOT, "dataDiagnostics", "testsvr.log");
+  const logFile = path.join(CODE_ROOT, "dataDiagnostics", "sandbox.log");
   const logFd = fs.openSync(logFile, "a");  // Append mode - multiple servers can share
   
   // Write a header so we can tell runs apart
@@ -528,7 +552,7 @@ function startServer(): void {
     detached: true
   });
   
-  // Unref so testsvr can exit while server keeps running
+  // Unref so sandbox can exit while server keeps running
   serverProcess.unref();
   
   serverProcess.on("close", (code) => {
@@ -596,8 +620,8 @@ async function main() {
     console.log(`READY ${testPort}`);
     log(`Server running on port ${testPort}`);
     log(`Test directory: ${testDir}`);
-    log(`To stop: testsvr -kill ${testPort}`);
-    log(`To remove: testsvr -remove ${testPort}`);
+    log(`To stop: sandbox -kill ${testPort}`);
+    log(`To remove: sandbox -remove ${testPort}`);
     
     // Exit - server keeps running independently
     process.exit(0);
