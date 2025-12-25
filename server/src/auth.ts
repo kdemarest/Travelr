@@ -11,16 +11,15 @@
  * 4. All API requests include authKey, userId, and deviceId in headers
  */
 
-import path from "node:path";
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { LazyFile } from "./lazy-file.js";
 import { User } from "./user.js";
 import { ClientDataCache } from "./client-data-cache.js";
-import { Paths } from "./data-paths.js";
+import { getStorageFor } from "./storage.js";
 
-const USERS_FILE = path.join(Paths.dataUsers, "users.json");
-const AUTHS_FILE = path.join(Paths.dataUsers, "auths.json");
-const USER_STATE_FILE = path.join(Paths.dataUsers, "userState.json");
+const USERS_KEY = "dataUsers/users.json";
+const AUTHS_KEY = "dataUsers/auths.json";
+const USER_STATE_KEY = "dataUsers/userState.json";
 
 // Per-user state (survives across devices)
 interface UserState {
@@ -49,10 +48,10 @@ type AuthsFile = Record<string, UserAuths>;   // userId -> UserAuths
 const parseJson = <T>(text: string): T => JSON.parse(text);
 const toJson = <T>(data: T): string => JSON.stringify(data, null, 2);
 
-// LazyFile instances for each data file
-const usersFile = new LazyFile<UsersFile>(USERS_FILE, {}, parseJson, toJson);
-const authsFile = new LazyFile<AuthsFile>(AUTHS_FILE, {}, parseJson, toJson);
-const userStateFile = new LazyFile<UserStateFile>(USER_STATE_FILE, {}, parseJson, toJson);
+// LazyFile instances - created in initAuth() after storage is initialized
+let usersFile: LazyFile<UsersFile>;
+let authsFile: LazyFile<AuthsFile>;
+let userStateFile: LazyFile<UserStateFile>;
 
 // O(1) lookup cache for Bearer token auth: authKey -> {userId, deviceId}
 const authKeyCache = new Map<string, { userId: string; deviceId: string }>();
@@ -152,22 +151,31 @@ function rebuildAuthKeyCache(): void {
 }
 
 /**
- * Initialize the auth module. Call once at startup.
+ * Initialize the auth module. Call once at startup after storage is initialized.
  */
-export function initAuth(): void {
-  usersFile.load();
-  authsFile.load();
-  userStateFile.load();
+export async function initAuth(): Promise<void> {
+  const storage = getStorageFor(USERS_KEY);
+  
+  // Create LazyFile instances with storage
+  // Users and auths get 0ms delay - writes happen immediately (security-critical)
+  usersFile = new LazyFile<UsersFile>(USERS_KEY, storage, {}, parseJson, toJson, 0, 0);
+  authsFile = new LazyFile<AuthsFile>(AUTHS_KEY, storage, {}, parseJson, toJson, 0, 0);
+  userStateFile = new LazyFile<UserStateFile>(USER_STATE_KEY, storage, {}, parseJson, toJson);
+  
+  // Load data from storage
+  await usersFile.load();
+  await authsFile.load();
+  await userStateFile.load();
   rebuildAuthKeyCache();
 }
 
 /**
  * Flush all pending writes. Call on shutdown.
  */
-export function flushAuth(): void {
-  usersFile.flush();
-  authsFile.flush();
-  userStateFile.flush();
+export async function flushAuth(): Promise<void> {
+  if (usersFile) await usersFile.flush();
+  if (authsFile) await authsFile.flush();
+  if (userStateFile) await userStateFile.flush();
 }
 
 // Check if user is admin (async - uses getUserRecord)

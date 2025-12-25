@@ -12,7 +12,6 @@ import { deployQuick } from "./deploy-quick.js";
 import { deployFull } from "./deploy-full.js";
 import { deployAudit } from "./deploy-audit.js";
 import { stopService, startService, getStatus, waitForService } from "./service-control.js";
-import { persistRemoteService } from "./remote-admin.js";
 
 // ============================================================================
 // Deploy Commands
@@ -127,22 +126,6 @@ registerOpCommand({
   paramMap: {},
   description: "Audit deployment state (local vs ECR vs App Runner vs production)",
   examples: ["deploy -audit"],
-});
-
-registerOpCommand({
-  group: "deploy",
-  flag: "persist",
-  fn: persistRemoteService,
-  paramMap: {
-    port: "container.port",
-    healthCheckPath: "container.healthCheck.path",
-    healthCheckExpected: "container.healthCheck.expected",
-    authUser: "auth.user",
-    authEndpoint: "auth.endpoint",
-    passwordEnvVar: "auth.passwordEnvVar",
-  },
-  description: "Sync data from running service to S3",
-  examples: ["deploy -persist"],
 });
 
 // ============================================================================

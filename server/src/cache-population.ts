@@ -22,11 +22,14 @@ export async function populateTripList(user: User): Promise<void> {
 /**
  * Populate the modelList and activeModel in the user's client data cache.
  */
-export function populateModelList(user: User): void {
+import { isOpenAIAvailable } from "./gpt.js";
+
+export async function populateModelList(user: User): Promise<void> {
   const models = getAvailableModels();
   const activeModel = getActiveModel();
   user.clientDataCache.set("modelList", models);
   user.clientDataCache.set("activeModel", activeModel);
+  user.clientDataCache.set("chatbotAvailable", await isOpenAIAvailable());
 }
 
 /**
@@ -34,5 +37,5 @@ export function populateModelList(user: User): void {
  */
 export async function populateBootstrapData(user: User): Promise<void> {
   await populateTripList(user);
-  populateModelList(user);
+  await populateModelList(user);
 }

@@ -20,15 +20,15 @@ const exchangeCatalog = createExchangeRateCatalog();
 /**
  * Load exchange rate catalog from disk. Call once at startup.
  */
-export function loadExchangeRateCatalog(): void {
-  exchangeCatalog.load();
+export async function loadExchangeRateCatalog(): Promise<void> {
+  await exchangeCatalog.load();
 }
 
 /**
  * Flush pending writes to disk. Call on shutdown.
  */
-export function flushExchangeRateCatalog(): void {
-  exchangeCatalog.flush();
+export async function flushExchangeRateCatalog(): Promise<void> {
+  await exchangeCatalog.flush();
 }
 
 /**

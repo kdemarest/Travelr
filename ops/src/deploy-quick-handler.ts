@@ -1,14 +1,17 @@
 /**
- * deploy-quick.ts - Quick deploy implementation
+ * deploy-quick-handler.ts - Server-side handler for quick deploy
+ * 
+ * This is the handler that runs ON the server when it receives a deploy-quick request.
+ * It extracts files from the zip, runs npm install/build, and signals restart.
+ * 
+ * Designed to be dependency-free from server internals - all paths and callbacks
+ * are passed in by the caller.
  * 
  * The server stays running while we:
  * 1. Extract files from zip (Node doesn't lock source files)
  * 2. Run npm install if package.json changed
  * 3. Run npm run build
- * 4. Exit with code 99 (signals server-runner to restart)
- * 
- * This keeps health checks happy the whole time since Express keeps responding.
- * The server-runner.ts process manager handles the actual restart.
+ * 4. Call triggerRestart() to signal server-runner to restart
  */
 
 import fs from "node:fs";
@@ -16,24 +19,41 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import AdmZip from "adm-zip";
-import { Paths } from "./data-paths.js";
-import { removePidFile } from "./pid-file.js";
 
-export interface DeployQuickOptions {
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface DeployQuickHandlerOptions {
+  /** The zip file contents */
   zipBuffer: Buffer;
+  /** Expected MD5 hash of the zip */
   expectedMd5: string;
+  /** Root directory where files should be extracted */
+  dataRoot: string;
+  /** Directory for writing log files */
+  diagnosticsDir: string;
+  /** Callback to trigger server restart (e.g., removePidFile + process.exit(99)) */
+  triggerRestart: () => void;
+  /** Test mode - don't actually restart */
   testMode?: boolean;
-  dryRun?: boolean;      // Do everything except copy files and restart
+  /** Dry run - do everything except copy files and restart */
+  dryRun?: boolean;
+  /** Skip npm install even if package.json changed */
   skipNpmInstall?: boolean;
 }
 
-export interface DeployQuickResult {
+export interface DeployQuickHandlerResult {
   ok: boolean;
   error?: string;
   fileCount?: number;
   message?: string;
   logFile?: string;
 }
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 /**
  * Write a file to disk, creating parent directories as needed.
@@ -57,11 +77,11 @@ function writeFileVerified(filePath: string, data: Buffer): { ok: boolean; error
 /**
  * Check if package.json in zip differs from current.
  */
-function packageJsonChanged(entries: AdmZip.IZipEntry[]): boolean {
+function packageJsonChanged(entries: AdmZip.IZipEntry[], dataRoot: string): boolean {
   const pkgEntry = entries.find(e => e.entryName === "package.json");
   if (!pkgEntry) return false;
   
-  const oldPkgPath = path.join(Paths.dataRoot, "package.json");
+  const oldPkgPath = path.join(dataRoot, "package.json");
   if (!fs.existsSync(oldPkgPath)) return true;
   
   const oldPkg = fs.readFileSync(oldPkgPath, "utf-8");
@@ -70,13 +90,26 @@ function packageJsonChanged(entries: AdmZip.IZipEntry[]): boolean {
   return oldPkg !== newPkg;
 }
 
+// ============================================================================
+// Main Handler
+// ============================================================================
+
 /**
- * Perform quick deploy: extract files, install, build, restart.
- * Server stays running until the very end.
+ * Handle a deploy-quick request: extract files, install, build, restart.
+ * Server stays running until the very end when triggerRestart() is called.
  */
-export async function performDeployQuick(options: DeployQuickOptions): Promise<DeployQuickResult> {
-  const { zipBuffer, expectedMd5, testMode = false, dryRun = false, skipNpmInstall = false } = options;
-  const ROOT = Paths.dataRoot;
+export async function handleDeployQuick(options: DeployQuickHandlerOptions): Promise<DeployQuickHandlerResult> {
+  const { 
+    zipBuffer, 
+    expectedMd5, 
+    dataRoot, 
+    diagnosticsDir,
+    triggerRestart,
+    testMode = false, 
+    dryRun = false, 
+    skipNpmInstall = false 
+  } = options;
+  
   const logs: string[] = [];
   
   function log(msg: string) {
@@ -85,12 +118,13 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
     logs.push(line);
   }
   
-  // Create log file
-  const logTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const diagnosticsDir = Paths.dataDiagnostics;
+  // Ensure diagnostics directory exists
   if (!fs.existsSync(diagnosticsDir)) {
     fs.mkdirSync(diagnosticsDir, { recursive: true });
   }
+  
+  // Create log file
+  const logTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = path.join(diagnosticsDir, `deploy-quick-${logTimestamp}.log`);
   
   function saveLog() {
@@ -102,7 +136,7 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
   try {
     log("=".repeat(60));
     log(`DEPLOY QUICK STARTED${dryRun ? " (DRY RUN)" : ""}`);
-    log(`Root: ${ROOT}`);
+    log(`Root: ${dataRoot}`);
     log("=".repeat(60));
     
     // Step 1: Verify MD5
@@ -119,7 +153,7 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
     log(`Found ${entries.length} files`);
     
     // Step 3: Check if npm install needed (before modifying files)
-    const needsInstall = packageJsonChanged(entries);
+    const needsInstall = packageJsonChanged(entries, dataRoot);
     log(`package.json changed: ${needsInstall}`);
     
     // Step 4: Extract files
@@ -128,7 +162,7 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
     let failCount = 0;
     
     for (const entry of entries) {
-      const destPath = path.join(ROOT, entry.entryName);
+      const destPath = path.join(dataRoot, entry.entryName);
       if (dryRun) {
         log(`  [DRY RUN] Would write: ${entry.entryName}`);
         successCount++;
@@ -155,19 +189,18 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
         log("[SKIP] npm install (skipNpmInstall flag)");
       } else {
         log("Running npm install...");
-        execSync("npm install", { cwd: ROOT, stdio: "pipe" });
+        execSync("npm install", { cwd: dataRoot, stdio: "pipe" });
         log("npm install complete");
       }
     }
     
     // Step 6: Build TypeScript
     log("Building TypeScript...");
-    execSync("npm run build", { cwd: ROOT, stdio: "pipe" });
+    execSync("npm run build", { cwd: dataRoot, stdio: "pipe" });
     log("Build complete");
     
-    // Step 7: Signal restart by exiting with code 99
-    // server-runner.ts watches for this and restarts the server
-    log("Signaling restart (exit code 99)...");
+    // Step 7: Signal restart
+    log("Signaling restart...");
     
     log("=".repeat(60));
     log(`DEPLOY QUICK COMPLETE${dryRun ? " (DRY RUN - NO RESTART)" : " - RESTARTING"}`);
@@ -175,13 +208,11 @@ export async function performDeployQuick(options: DeployQuickOptions): Promise<D
     
     saveLog();
     
-    // Exit with code 99 to signal server-runner to restart us
-    // In dry-run or test mode, don't exit
+    // Trigger restart unless in dry-run or test mode
     if (!testMode && !dryRun) {
       setTimeout(() => {
-        console.log("[DeployQuick] Exiting for restart (code 99)...");
-        removePidFile();
-        process.exit(99);
+        console.log("[DeployQuick] Triggering restart...");
+        triggerRestart();
       }, 500);
     }
     

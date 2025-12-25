@@ -6,6 +6,7 @@ import { dateLinkStyles, renderTextWithDateLinks } from "../date-link";
 import { parseCanonicalCommand } from "../command-parse";
 import type { Activity } from "../types";
 import { formatMonthDayLabel } from "../datetime";
+import { clientDataCache } from "../client-data-cache";
 
 export type PanelDetailLogEntry =
   | { id: string; kind: "text"; text: string; isUser?: boolean; pending?: boolean }
@@ -524,9 +525,30 @@ export class PanelDetail extends LitElement {
   }
 
   render() {
+    // Get model info from clientDataCache
+    const modelList = clientDataCache.get<string[]>("modelList") ?? [];
+    const activeModel = clientDataCache.get<string>("activeModel") ?? "";
+    const chatbotAvailable = clientDataCache.get<boolean>("chatbotAvailable");
+
     return html`
-      <div class="chat-log">
-        ${this.messages.map((entry) => this.renderChatLogEntry(entry)) }
+      <div style="position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column;">
+        <div style="position: absolute; top: 0; left: 0; z-index: 10; background: #fff; border: 1px solid #cbd5f5; border-radius: 6px; padding: 0.25rem 0.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.06);">
+          <label style="font-size: 0.85em; font-weight: 500; margin-right: 0.25rem;">Chatbot:</label>
+          <select
+            style="font-size: 0.85em;"
+            ?disabled=${chatbotAvailable === false}
+            .value=${chatbotAvailable === false ? "unavailable" : activeModel}
+          >
+            ${chatbotAvailable === false
+              ? html`<option value="unavailable">Unavailable</option>`
+              : modelList.map(
+                  (model) => html`<option value=${model} ?selected=${model === activeModel}>${model}</option>`
+                )}
+          </select>
+        </div>
+        <div class="chat-log" style="flex: 1; padding-top: 2.2rem;">
+          ${this.messages.map((entry) => this.renderChatLogEntry(entry))}
+        </div>
       </div>
       <form @submit=${this.handleSubmit}>
         <textarea
@@ -537,24 +559,6 @@ export class PanelDetail extends LitElement {
         ></textarea>
         <div class="form-actions">
           <div class="actions-left">
-            <button
-              type="button"
-              class="icon-button"
-              aria-label="Undo"
-              @click=${this.handleUndoClick}
-              ?disabled=${this.pending}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke-width="1.5"
-                stroke="currentColor"
-                class="size-6"
-              >
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
-              </svg>
-            </button>
             <button
               type="button"
               class="icon-button"

@@ -5,17 +5,18 @@
  * PURPOSE:
  * Creates a fully isolated test environment that behaves identically to production.
  * The test server has NO special knowledge that it's a test - isolation comes purely
- * from running in a separate directory with copied data files.
+ * from running in a separate directory with copied data and code files.
  * 
  * HOW IT WORKS:
  * 1. Selects an available port from 60000-60999 (checks for existing TEST_<port>/ dirs)
  * 2. Creates testDirs/TEST_<port>/ directory
  * 3. Copies data directories (dataUsers/, dataTrips/, etc.) into TEST_<port>/
- * 4. If -copycode flag: also copies scripts/, server/, client/ (needed for deploy-quick tests)
- * 5. Generates config.test.json with the selected port
- * 6. Builds the server (npm run build in server/)
- * 7. Starts the server FROM the test directory (so __dirname paths resolve there)
- * 8. Waits for server to be ready, then signals the parent process
+ * 4. Copies code directories (scripts/, server/, client/) into TEST_<port>/
+ * 5. Creates junctions for node_modules (fast, no copying)
+ * 6. Generates config.test.json with the selected port
+ * 7. Builds the server (npm run build in server/)
+ * 8. Starts the server FROM the test directory (so __dirname paths resolve there)
+ * 9. Waits for server to be ready, then signals the parent process
  * 
  * PORT DISCOVERY:
  * The selected port is communicated to the parent process via stdout:
@@ -41,7 +42,6 @@
  * Usage:
  *   npx tsx scripts/sandbox.ts                    # Show usage
  *   npx tsx scripts/sandbox.ts -spawn             # Auto-select port, spawn server
- *   npx tsx scripts/sandbox.ts -spawn -copycode   # Also copy server/, client/
  *   npx tsx scripts/sandbox.ts -list              # List all test servers in 60000-60999 range
  *   npx tsx scripts/sandbox.ts -kill 60001        # Kill server on port 60001
  *   npx tsx scripts/sandbox.ts -remove 60001      # Kill server AND delete testDirs/TEST_60001/
@@ -262,7 +262,6 @@ async function removeServer(port: number): Promise<boolean> {
 const args = process.argv.slice(2);
 
 // Spawn mode variables (must be declared before dispatch since main() may be called)
-const copyCode = args.includes("-copycode");
 let testPort: number;
 let testDir: string;
 let serverProcess: ChildProcess | null = null;
@@ -271,15 +270,13 @@ function showUsage(): void {
   console.log(`Usage: sandbox <command> [options]
 
 Commands:
-  -spawn [-copycode]   Start a new isolated test server
-                       -copycode: also copy server/ and client/ code
+  -spawn               Start a new isolated test server
   -list                List all test servers in port range ${PORT_MIN}-${PORT_MAX}
   -kill <port>         Kill a test server by port
   -remove <port>       Kill and remove test server directory
 
 Examples:
   sandbox -spawn
-  sandbox -spawn -copycode
   sandbox -list
   sandbox -kill ${PORT_MIN + 1}
   sandbox -remove ${PORT_MIN + 1}
@@ -376,55 +373,53 @@ function createTestDirectory(port: number): string {
     return true;
   };
   
-  // Copy code directories if requested
-  if (copyCode) {
-    const codeDirs = ["scripts", "server", "client"];
-    for (const codeDir of codeDirs) {
-      const src = path.join(CODE_ROOT, codeDir);
-      const dest = path.join(dir, codeDir);
-      if (fs.existsSync(src)) {
-        fs.cpSync(src, dest, { recursive: true, filter: copyFilter });
-        log(`  Copied ${codeDir}/`);
-      }
+  // Copy code directories (always - for full test fidelity)
+  const codeDirs = ["scripts", "server", "client"];
+  for (const codeDir of codeDirs) {
+    const src = path.join(CODE_ROOT, codeDir);
+    const dest = path.join(dir, codeDir);
+    if (fs.existsSync(src)) {
+      fs.cpSync(src, dest, { recursive: true, filter: copyFilter });
+      log(`  Copied ${codeDir}/`);
     }
-    // Also copy root package.json and tsconfig for npm commands
-    for (const file of ["package.json", "tsconfig.base.json"]) {
-      const src = path.join(CODE_ROOT, file);
-      const dest = path.join(dir, file);
-      if (fs.existsSync(src)) {
-        fs.cpSync(src, dest);
-        log(`  Copied ${file}`);
-      }
+  }
+  // Also copy root package.json and tsconfig for npm commands
+  for (const file of ["package.json", "tsconfig.base.json"]) {
+    const src = path.join(CODE_ROOT, file);
+    const dest = path.join(dir, file);
+    if (fs.existsSync(src)) {
+      fs.cpSync(src, dest);
+      log(`  Copied ${file}`);
     }
-    
-    // ========================================================================
-    // JUNCTION LINKS FOR node_modules
-    // ========================================================================
-    // We copied server/ and client/ but SKIPPED their node_modules/ (huge!).
-    // The copied code still needs to find its dependencies when it runs.
-    // 
-    // Solution: Create "junctions" - a Windows filesystem feature that acts
-    // like a symlink for directories. When Node resolves require('express')
-    // from TEST_5000/server/dist/, it walks up looking for node_modules/.
-    // The junction at TEST_5000/server/node_modules/ transparently redirects
-    // to CODE_ROOT/server/node_modules/, so modules are found.
-    //
-    // Why junctions instead of symlinks?
-    // - Symlinks on Windows require admin rights or Developer Mode
-    // - Junctions work without elevation for directories
-    // - When we delete TEST_5000/, only the junction is deleted, not the
-    //   real node_modules
-    //
-    // Note: Target path MUST be absolute on Windows.
-    // ========================================================================
-    const nodeModulesDirs = ["server", "client"];
-    for (const subdir of nodeModulesDirs) {
-      const realNodeModules = path.join(CODE_ROOT, subdir, "node_modules");
-      const junctionPath = path.join(dir, subdir, "node_modules");
-      if (fs.existsSync(realNodeModules)) {
-        fs.symlinkSync(realNodeModules, junctionPath, "junction");
-        log(`  Linked ${subdir}/node_modules/ (junction)`);
-      }
+  }
+  
+  // ========================================================================
+  // JUNCTION LINKS FOR node_modules
+  // ========================================================================
+  // We copied server/ and client/ but SKIPPED their node_modules/ (huge!).
+  // The copied code still needs to find its dependencies when it runs.
+  // 
+  // Solution: Create "junctions" - a Windows filesystem feature that acts
+  // like a symlink for directories. When Node resolves require('express')
+  // from TEST_5000/server/dist/, it walks up looking for node_modules/.
+  // The junction at TEST_5000/server/node_modules/ transparently redirects
+  // to CODE_ROOT/server/node_modules/, so modules are found.
+  //
+  // Why junctions instead of symlinks?
+  // - Symlinks on Windows require admin rights or Developer Mode
+  // - Junctions work without elevation for directories
+  // - When we delete TEST_5000/, only the junction is deleted, not the
+  //   real node_modules
+  //
+  // Note: Target path MUST be absolute on Windows.
+  // ========================================================================
+  const nodeModulesDirs = ["server", "client"];
+  for (const subdir of nodeModulesDirs) {
+    const realNodeModules = path.join(CODE_ROOT, subdir, "node_modules");
+    const junctionPath = path.join(dir, subdir, "node_modules");
+    if (fs.existsSync(realNodeModules)) {
+      fs.symlinkSync(realNodeModules, junctionPath, "junction");
+      log(`  Linked ${subdir}/node_modules/ (junction)`);
     }
   }
   
@@ -498,21 +493,13 @@ function startServer(): void {
     TRAVELR_CONFIG: "test"
   };
   
-  // WHERE THE SERVER CODE COMES FROM vs WHERE IT RUNS
+  // WHERE THE SERVER CODE COMES FROM
   //
-  // This is subtle but critical:
-  //
-  // - cwd (testDir): Always the test directory. This is where the server looks
-  //   for data files, PID files, configs, etc. via process.cwd(). This provides
-  //   DATA ISOLATION - the test server won't touch real data files.
-  //
-  // - serverScript: Where the actual JavaScript code lives.
-  //   * Without -copycode: Uses CODE_ROOT's server/dist/. The test runs the REAL
-  //     server code, just with isolated data. Good for most tests.
-  //   * With -copycode: Uses testDir's server/dist/. The test runs a COPY of the
-  //     server code. Required for deploy-quick tests, where the server will
-  //     overwrite files in testDir and restart. If we ran from CODE_ROOT, the
-  //     deploy-quick would overwrite real code!
+  // The server always runs from testDir, which contains a full copy of the code.
+  // This ensures:
+  // - Full test fidelity (environment matches dev/prod as closely as possible)
+  // - Deploy-quick tests can overwrite files without affecting real code
+  // - The test directory is a valid "project root" with dataConfig/, server/, etc.
   //
   // ============================================================================
   // WARNING: MANUAL DEBUGGING OF SANDBOX SERVERS
@@ -534,12 +521,16 @@ function startServer(): void {
   // We use server-runner.js instead of index.js so deploy-quick works correctly.
   // server-runner watches for exit code 99 and restarts the server.
   //
-  const serverRoot = copyCode ? testDir : CODE_ROOT;
-  const serverScript = path.join(serverRoot, "server", "dist", "server-runner.js");
+  const serverScript = path.join(testDir, "server", "dist", "server-runner.js");
   
   // On Windows, we need fully detached stdio for the process to survive parent exit.
   // Server output goes to a diagnostic log file for later analysis if needed.
-  const logFile = path.join(CODE_ROOT, "dataDiagnostics", "sandbox.log");
+  // Ensure the diagnostics directory exists (sandbox owns this log file).
+  const diagnosticsDir = path.join(CODE_ROOT, "dataDiagnostics");
+  if (!fs.existsSync(diagnosticsDir)) {
+    fs.mkdirSync(diagnosticsDir, { recursive: true });
+  }
+  const logFile = path.join(diagnosticsDir, "sandbox.log");
   const logFd = fs.openSync(logFile, "a");  // Append mode - multiple servers can share
   
   // Write a header so we can tell runs apart

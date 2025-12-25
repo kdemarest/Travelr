@@ -26,8 +26,10 @@ export class Trip {
    */
   async load(): Promise<void> {
     if (this.loaded) return;
-    // Journal needs async load; Conversation loads sync in constructor
-    await this.journal.load();
+    await Promise.all([
+      this.journal.load(),
+      this.conversation.load()
+    ]);
     this.loaded = true;
   }
   

@@ -13,6 +13,13 @@
       "city": "localhost",
       "firstSeen": "2025-12-02",
       "lastSeen": "2025-12-02"
+    },
+    "device-bdbdbe0aea794c32": {
+      "authKey": "auth-18b1cb0190700157cc3279e1937f20d466a9def5b25ca535cd4e961acaa1452c",
+      "label": "Windows / Chrome",
+      "city": "localhost",
+      "firstSeen": "2025-12-10",
+      "lastSeen": "2025-12-10"
     }
   },
   "deploybot": {

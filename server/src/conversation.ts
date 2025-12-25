@@ -1,4 +1,5 @@
 import { LazyFile } from "./lazy-file.js";
+import { getStorageFor } from "./storage.js";
 
 // Maximum number of messages to keep in conversation history
 const MAX_MESSAGES = 100;
@@ -14,15 +15,30 @@ export class Conversation {
   
   constructor(
     readonly tripName: string,
-    filePath: string
+    key: string
   ) {
+    const storage = getStorageFor(key);
     this.file = new LazyFile<string[]>(
-      filePath,
+      key,
+      storage,
       [],
       (text) => text.split(/\r?\n/).filter(line => line.length > 0),
       (messages) => messages.join("\n")
     );
-    this.file.load();
+  }
+  
+  /**
+   * Load conversation from storage. Call once when trip is accessed.
+   */
+  async load(): Promise<void> {
+    await this.file.load();
+  }
+  
+  /**
+   * Flush pending writes to storage.
+   */
+  async flush(): Promise<void> {
+    await this.file.flush();
   }
 
   read(): string {
@@ -55,9 +71,5 @@ export class Conversation {
     }
     
     this.file.setDirty();
-  }
-  
-  flush(): void {
-    this.file.flush();
   }
 }

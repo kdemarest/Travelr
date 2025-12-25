@@ -4,8 +4,7 @@
  * 
  * Tests:
  * 1. No args shows usage
- * 2. -spawn creates isolated server (data only)
- * 3. -spawn -copycode creates full isolation with junctions
+ * 2. -spawn creates isolated server (full code+data copy)
  * 4. -list shows running servers
  * 5. -kill terminates server
  * 6. -remove kills and deletes directory
@@ -80,17 +79,13 @@ function runSANDBOX(args: string[]): { stdout: string; stderr: string; exitCode:
  * SANDBOX now exits after printing READY, server keeps running.
  * Returns the port number, or 0 on failure.
  */
-async function spawnTestServer(copyCode: boolean): Promise<number> {
+async function spawnTestServer(): Promise<number> {
   const args = ["-spawn"];
-  if (copyCode) args.push("-copycode");
-  
-  // Use execSync - simple and reliable. SANDBOX exits after READY, server keeps running.
+  // Always full code+data copy now
   const { stdout, exitCode } = runSANDBOX(args);
-  
   if (exitCode !== 0) {
     return 0;
   }
-  
   const match = stdout.match(/READY\s+(\d+)/);
   return match ? parseInt(match[1], 10) : 0;
 }
@@ -154,9 +149,8 @@ async function testUsage(): Promise<void> {
 }
 
 async function testBasicSpawn(): Promise<void> {
-  log(`\n${CYAN}Test: Basic spawn (no -copycode)${RESET}`);
-  
-  testPort = await spawnTestServer(false);
+  log(`\n${CYAN}Test: Basic spawn${RESET}`);
+  testPort = await spawnTestServer();
   if (!testPort) {
     fail("Server started", "Did not receive READY signal");
     return;
@@ -196,11 +190,28 @@ async function testBasicSpawn(): Promise<void> {
     fail("server.pid exists");
   }
   
-  // Check code directories do NOT exist (no -copycode)
-  if (!fs.existsSync(path.join(testDir, "server"))) {
-    pass("server/ NOT copied (expected without -copycode)");
-  } else {
-    fail("server/ NOT copied");
+  // Check code directories exist
+  const codeDirs = ["scripts", "server", "client"];
+  for (const dir of codeDirs) {
+    if (fs.existsSync(path.join(testDir, dir))) {
+      pass(`${dir}/ copied`);
+    } else {
+      fail(`${dir}/ copied`);
+    }
+  }
+  // Check node_modules junctions exist
+  for (const dir of ["server", "client"]) {
+    const junctionPath = path.join(testDir, dir, "node_modules");
+    if (fs.existsSync(junctionPath)) {
+      const stats = fs.lstatSync(junctionPath);
+      if (stats.isSymbolicLink()) {
+        pass(`${dir}/node_modules/ is a junction`);
+      } else {
+        fail(`${dir}/node_modules/ is a junction`, "Exists but not a junction");
+      }
+    } else {
+      fail(`${dir}/node_modules/ junction exists`);
+    }
   }
   
   // Check server responds to ping
@@ -331,55 +342,7 @@ async function testRemove(): Promise<void> {
   testDir = "";
 }
 
-async function testCopyCodeSpawn(): Promise<void> {
-  log(`\n${CYAN}Test: Spawn with -copycode${RESET}`);
-  
-  testPort = await spawnTestServer(true);
-  if (!testPort) {
-    fail("Server started", "Did not receive READY signal");
-    return;
-  }
-  pass("Server started");
-  
-  testDir = path.join(TEST_DIRS_ROOT, `TEST_${testPort}`);
-  
-  // Check code directories exist
-  const codeDirs = ["scripts", "server", "client"];
-  for (const dir of codeDirs) {
-    if (fs.existsSync(path.join(testDir, dir))) {
-      pass(`${dir}/ copied`);
-    } else {
-      fail(`${dir}/ copied`);
-    }
-  }
-  
-  // Check node_modules junctions exist
-  for (const dir of ["server", "client"]) {
-    const junctionPath = path.join(testDir, dir, "node_modules");
-    if (fs.existsSync(junctionPath)) {
-      const stats = fs.lstatSync(junctionPath);
-      if (stats.isSymbolicLink()) {
-        pass(`${dir}/node_modules/ is a junction`);
-      } else {
-        fail(`${dir}/node_modules/ is a junction`, "Exists but not a junction");
-      }
-    } else {
-      fail(`${dir}/node_modules/ junction exists`);
-    }
-  }
-  
-  // Clean up using -remove (kills server first, then removes directory)
-  const { exitCode } = runSANDBOX(["-remove", String(testPort)]);
-  if (exitCode === 0 && !fs.existsSync(testDir)) {
-    pass("-remove cleans up -copycode directory (junctions don't block)");
-  } else {
-    fail("-remove cleans up -copycode directory");
-    await cleanupTestDir();
-  }
-  
-  testPort = 0;
-  testDir = "";
-}
+
 
 async function testSafetyChecks(): Promise<void> {
   log(`\n${CYAN}Test: Safety checks${RESET}`);
@@ -424,7 +387,7 @@ async function main() {
     await testList();
     await testKill();
     await testRemove();
-    await testCopyCodeSpawn();
+
     await testSafetyChecks();
   } finally {
     // Ensure cleanup on any failure

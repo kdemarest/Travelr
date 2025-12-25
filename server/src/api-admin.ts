@@ -4,7 +4,6 @@
  * GET /admin/files - Download all persistent files as JSON
  * POST /admin/files - Upload and restore persistent files
  * POST /admin/maintenance - Enable/disable maintenance mode
- * POST /admin/persist - Upload local files to S3
  * POST /admin/deploy-quick - Receive zip, extract, build, restart server
  * GET /admin/deploy-quick-status - Get the most recent deploy-quick log file
  * 
@@ -14,11 +13,10 @@
 import { Router, Request, Response } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
-import { uploadToS3, isS3Enabled } from "./s3-sync.js";
 import { isDeployQuickAllowed, isTestMode } from "./config.js";
 import { Paths } from "./data-paths.js";
-import { performDeployQuick } from "./deploy-quick.js";
+import { removePidFile } from "./pid-file.js";
+import { handleDeployQuick } from "@jeesty/ops";
 import type { AuthenticatedRequest } from "./index.js";
 
 const router = Router();
@@ -184,7 +182,7 @@ router.post("/files", requireAdmin, (req: Request, res: Response) => {
  * Body: { enabled: true/false }
  * 
  * When enabled, the server will reject data-modifying requests with a friendly message.
- * Call this BEFORE /admin/persist during deploy.
+ * Use this to alert clients before maintenance operations like deploys.
  */
 router.post("/maintenance", requireAdmin, (req: Request, res: Response) => {
   const { enabled } = req.body as { enabled?: boolean };
@@ -201,33 +199,6 @@ router.post("/maintenance", requireAdmin, (req: Request, res: Response) => {
     maintenanceMode: enabled,
     message: enabled ? getMaintenanceMessage() : "Server is accepting requests normally"
   });
-});
-
-/**
- * POST /admin/persist - Upload local files to S3
- * 
- * Called by deploy script before rebuilding to ensure data is saved.
- */
-router.post("/persist", requireAdmin, async (_req: Request, res: Response) => {
-  try {
-    if (!isS3Enabled()) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: "S3 not configured - set TRAVELR_S3_BUCKET environment variable" 
-      });
-    }
-    
-    const filesUploaded = await uploadToS3();
-    
-    res.json({ 
-      ok: true, 
-      filesUploaded,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error("Failed to persist to S3:", error);
-    res.status(500).json({ ok: false, error: "Failed to persist to S3" });
-  }
 });
 
 /**
@@ -281,9 +252,16 @@ router.post("/deploy-quick", requireAdmin, async (req: Request, res: Response) =
     console.log(`[DeployQuick] Received ${zipBuffer.length} bytes, MD5: ${expectedMd5}`);
     
     // Perform the deploy-quick (extract, build, restart)
-    const result = await performDeployQuick({
+    // Pass server-specific values to the ops handler
+    const result = await handleDeployQuick({
       zipBuffer,
       expectedMd5,
+      dataRoot: Paths.dataRoot,
+      diagnosticsDir: Paths.dataDiagnostics,
+      triggerRestart: () => {
+        removePidFile();
+        process.exit(99);
+      },
       testMode,
       dryRun,
       skipNpmInstall: isTestMode() // Skip npm install in test environments

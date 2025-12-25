@@ -3,7 +3,7 @@
  * 
  * Explicit lifecycle: call load() once when the file is first needed,
  * then access data directly via sync methods. Appends update memory
- * immediately and are debounced to disk.
+ * immediately and are debounced to storage.
  * 
  * Designed for journal files where:
  * - Reads are frequent (every request rebuilds model)
@@ -11,7 +11,7 @@
  * - No need to rewrite entire file
  */
 
-import fs from "fs-extra";
+import type { Storage } from "./storage.js";
 
 export class LazyAppendFile<T> {
   private lines: string[] = [];           // Raw lines
@@ -22,7 +22,8 @@ export class LazyAppendFile<T> {
   private maxDelayTimer: ReturnType<typeof setTimeout> | null = null;
   
   constructor(
-    private readonly filePath: string,
+    private readonly key: string,
+    private readonly storage: Storage,
     private readonly parseLine: (line: string, index: number) => T,
     private readonly debounceMs: number = 100,   // Short debounce for batching rapid appends
     private readonly maxDelayMs: number = 5000   // Max time before forced write
@@ -32,8 +33,8 @@ export class LazyAppendFile<T> {
    * Load and parse the file. Call once when trip is accessed.
    */
   async load(): Promise<void> {
-    if (await fs.pathExists(this.filePath)) {
-      const contents = await fs.readFile(this.filePath, "utf8");
+    const contents = await this.storage.read(this.key);
+    if (contents !== null) {
       this.lines = contents
         .split(/\r?\n/)
         .map(line => line.trim())
@@ -87,7 +88,7 @@ export class LazyAppendFile<T> {
   
   private assertLoaded(): void {
     if (!this.loaded) {
-      throw new Error(`LazyAppendFile(${this.filePath}): load() must be called before accessing data`);
+      throw new Error(`LazyAppendFile(${this.key}): load() must be called before accessing data`);
     }
   }
   
@@ -114,14 +115,14 @@ export class LazyAppendFile<T> {
    * Create the file with initial content (for new trips).
    */
   async create(initialLine: string): Promise<void> {
-    if (await fs.pathExists(this.filePath)) {
-      throw new Error(`File already exists: ${this.filePath}`);
+    if (await this.storage.exists(this.key)) {
+      throw new Error(`File already exists: ${this.key}`);
     }
     
     const trimmedLine = initialLine.trimEnd();
     
     // Write immediately (no debounce for creation)
-    await fs.outputFile(this.filePath, trimmedLine + "\n", "utf8");
+    await this.storage.write(this.key, trimmedLine + "\n");
     
     // Initialize cache
     this.lines = [trimmedLine];
@@ -132,17 +133,25 @@ export class LazyAppendFile<T> {
   private scheduleFlush(): void {
     // Start max delay timer on first pending append (guarantees write within maxDelayMs)
     if (!this.maxDelayTimer) {
-      this.maxDelayTimer = setTimeout(() => this._flushToFile(), this.maxDelayMs);
+      this.maxDelayTimer = setTimeout(() => {
+        this._flushToStorage().catch(err =>
+          console.error(`[LazyAppendFile] Failed to flush ${this.key}:`, err)
+        );
+      }, this.maxDelayMs);
     }
     
     // Reset debounce timer on each append
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
-    this.debounceTimer = setTimeout(() => this._flushToFile(), this.debounceMs);
+    this.debounceTimer = setTimeout(() => {
+      this._flushToStorage().catch(err =>
+        console.error(`[LazyAppendFile] Failed to flush ${this.key}:`, err)
+      );
+    }, this.debounceMs);
   }
   
-  private async _flushToFile(): Promise<void> {
+  private async _flushToStorage(): Promise<void> {
     // Clear both timers
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -158,18 +167,14 @@ export class LazyAppendFile<T> {
     const toWrite = this.pendingAppends.join("");
     this.pendingAppends = [];
     
-    try {
-      await fs.appendFile(this.filePath, toWrite, "utf8");
-    } catch (err) {
-      console.error(`[LazyAppendFile] Failed to append to ${this.filePath}:`, err);
-    }
+    await this.storage.append(this.key, toWrite);
   }
   
   /**
    * Flush any pending appends immediately. Call on shutdown.
    */
   async flush(): Promise<void> {
-    await this._flushToFile();
+    await this._flushToStorage();
   }
   
   /**

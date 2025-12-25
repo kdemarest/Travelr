@@ -294,10 +294,11 @@ async function executeCommandBatch(
 
       // Enqueue chatbot task if input contains prose (non-command text)
       if (hasProse(chatPieces)) {
+        const userPrefsFile = await user.getPrefsFile();
         const chatbotContext: ChatbotContext = {
           tripName,
           tripCache,
-          userPreferences: { ...user.prefsFile.data },
+          userPreferences: { ...userPrefsFile.data },
           focusSummary,
           markedActivities,
           markedDates,

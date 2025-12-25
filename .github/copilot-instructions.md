@@ -17,15 +17,15 @@ For example, a good spec for auth answers: What routes require auth? What types 
 ## File Architecture
 
 ### Data Directories
-| Directory | Contents | Lifecycle |
-|-----------|----------|-----------|
-| `dataTrips/` | Per-trip journal (append-only) + conversation (rolling window) | Created on first trip command |
-| `dataUsers/` | User credentials, auth sessions, user state | Manual setup; updated on login/logout |
-| `dataUserPrefs/` | Per-user preferences | Created on first pref change |
-| `dataConfig/` | Environment-specific config files | Manual setup |
-| `dataCountries/` | Country data, exchange rates | Static reference data |
-| `dataDiagnostics/` | Last request/response, debug logs | Overwritten each request for debugging |
-| `dataTemp/` | Temporary files (deploy extraction, etc.) | Ephemeral, can be deleted |
+| Directory | Contents | Storage | Lifecycle |
+|-----------|----------|---------|------------|
+| `dataTrips/` | Per-trip journal (append-only) + conversation (rolling window) | S3 in prod | Created on first trip command |
+| `dataUsers/` | User credentials, auth sessions, user state | S3 in prod | Manual setup; updated on login/logout |
+| `dataUserPrefs/` | Per-user preferences | S3 in prod | Created on first pref change |
+| `dataConfig/` | Environment-specific config files | Always local | Manual setup |
+| `dataCountries/` | Country data, exchange rates | S3 in prod | Static reference data |
+| `dataDiagnostics/` | Last request/response, debug logs | Always local | Overwritten each request for debugging |
+| `dataTemp/` | Temporary files (deploy extraction, etc.) | Always local | Ephemeral, can be deleted |
 
 ### Code Files
 - Command handlers: `cmd-*.ts`
@@ -64,6 +64,19 @@ System users are defined ONLY by environment variables - they are never stored i
 
 ## Web Architecture
 
+### Storage Abstraction
+- `Storage` interface in `storage.ts` abstracts local filesystem vs S3
+- `StorageLocal` wraps `fs` module for local files
+- `StorageS3` uses AWS SDK for S3 bucket access
+- `getStorageFor(key)` returns the appropriate backend based on key prefix and environment
+- `dataConfig/` and `dataTemp/` always use local storage; everything else uses S3 in production
+- All Storage methods are **async** (returns Promises)
+
+### Fresh Deploy Handling
+- On first deploy with empty S3 bucket, all files return null
+- LazyFile and LazyAppendFile use default values when files don't exist
+- Files are created in S3 on first write (e.g., first user login creates auth files)
+
 ### Web-Friendly Architecture
 - On web servers, although atomic "get request, read file, write file, respond" is the standard, we are caching data because this is always going to be a single-server, single instance project. And we want to save $ on AWS S3.
 
@@ -77,7 +90,7 @@ System users are defined ONLY by environment variables - they are never stored i
 - OpenAI unavailable: commands still work, chatbot returns error message
 - Google Search unavailable: chatbot works but can't augment with web results
 - ip-api.com unavailable: login succeeds, city defaults to "unknown"
-- AWS S3 unavailable: server can't start (data files required)
+- AWS S3 unavailable: server starts but user data operations fail (S3 is authoritative for user data in production)
 
 ## Code Architecture
 
@@ -118,15 +131,19 @@ System users are defined ONLY by environment variables - they are never stored i
 ## Code Patterns
 
 ### LazyFile Pattern
+- Eager loads and lazy debounced writes
 - In-memory caching with debounced writes for JSON-like data
+- `load()` is **async** - call once at startup, await it
+- `flush()` is **async** - call on shutdown, await it
+- `setDirty()` is sync - just schedules a write via setTimeout
 - Always mutate `data` in place, never reassign it
-- Call `setDirty()` after mutations
 - The `__dataVerifier` field catches accidental reassignment
  
 ### LazyAppendFile Pattern
 - Append-only file with in-memory cache, used for journals
-- `append()` updates memory immediately, debounces disk write
-- Never rewrites entire file, only appends
+- `load()` and `flush()` are **async**
+- `append()` is sync - updates memory immediately, debounces storage write
+- Never rewrites entire file, only appends (except S3 which does read-modify-write)
 
 ## App Development
 

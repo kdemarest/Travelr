@@ -1,6 +1,5 @@
-import path from "node:path";
 import { LazyFile } from "./lazy-file.js";
-import { Paths } from "./data-paths.js";
+import { getStorageFor } from "./storage.js";
 
 export interface ExchangeRateRecord {
   currencyAlpha3: string;
@@ -8,23 +7,24 @@ export interface ExchangeRateRecord {
   exchangeRateLastUpdate: string;
 }
 
-const catalogPath = path.join(Paths.catalog, "exchangeRates.json");
+const CATALOG_KEY = "dataCountries/exchangeRates.json";
 
 export class ExchangeRateCatalog {
   private readonly recordMap = new Map<string, ExchangeRateRecord>();
-  private readonly lazyFile: LazyFile<ExchangeRateRecord[]>;
+  private lazyFile: LazyFile<ExchangeRateRecord[]> | null = null;
 
-  constructor(filePath: string = catalogPath) {
+  constructor(private readonly key: string = CATALOG_KEY) {}
+
+  async load(): Promise<void> {
+    const storage = getStorageFor(this.key);
     this.lazyFile = new LazyFile<ExchangeRateRecord[]>(
-      filePath,
+      this.key,
+      storage,
       [],
       (text) => JSON.parse(text) as ExchangeRateRecord[],
       (data) => JSON.stringify(data, null, 2)
     );
-  }
-
-  load(): void {
-    this.lazyFile.load();
+    await this.lazyFile.load();
     this.recordMap.clear();
     for (const record of this.lazyFile.data) {
       if (record.currencyAlpha3) {
@@ -45,6 +45,9 @@ export class ExchangeRateCatalog {
   }
 
   upsert(record: ExchangeRateRecord): void {
+    if (!this.lazyFile) {
+      throw new Error("ExchangeRateCatalog not loaded. Call load() first.");
+    }
     const normalized = normalizeCurrencyCode(record.currencyAlpha3);
     const normalizedRecord = {
       currencyAlpha3: normalized,
@@ -63,8 +66,10 @@ export class ExchangeRateCatalog {
     this.lazyFile.setDirty();
   }
 
-  flush(): void {
-    this.lazyFile.flush();
+  async flush(): Promise<void> {
+    if (this.lazyFile) {
+      await this.lazyFile.flush();
+    }
   }
 }
 
@@ -72,8 +77,8 @@ export function createExchangeRateCatalog(): ExchangeRateCatalog {
   return new ExchangeRateCatalog();
 }
 
-export function getExchangeRateCatalogPath(): string {
-  return catalogPath;
+export function getExchangeRateCatalogKey(): string {
+  return CATALOG_KEY;
 }
 
 function normalizeCurrencyCode(code: string): string {

@@ -20,7 +20,7 @@ function cmdModel()
     const target = parsed.target;
 
     // Update the client data cache with model info
-    populateModelList(ctx.user);
+    await populateModelList(ctx.user);
 
     if (!target) {
       const available = getAvailableModels();
@@ -33,7 +33,7 @@ function cmdModel()
     try {
       setActiveModel(target);
       // Update cache again after change
-      populateModelList(ctx.user);
+      await populateModelList(ctx.user);
       return {
         message: `ChatGPT model set to ${target}.`
       };

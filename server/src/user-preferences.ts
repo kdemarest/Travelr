@@ -7,13 +7,11 @@
  * The LazyFile is loaded during authentication and attached to the User object.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import { LazyFile } from "./lazy-file.js";
-import { Paths } from "./data-paths.js";
+import { getStorageFor, getStorageLocal } from "./storage.js";
 
-const PREFS_DIR = Paths.dataUserPrefs;
-const DEFAULT_PREFS_PATH = path.join(PREFS_DIR, "default-prefs.json");
+const PREFS_DIR = "dataUserPrefs";
+const DEFAULT_PREFS_KEY = `${PREFS_DIR}/default-prefs.json`;
 
 export type UserPreferences = Record<string, unknown>;
 
@@ -25,22 +23,27 @@ const toJson = (data: UserPreferences): string => JSON.stringify(data, null, 2) 
 const userPrefsCache = new Map<string, LazyFile<UserPreferences>>();
 
 /**
- * Get the path to a user's preferences file.
+ * Get the storage key for a user's preferences file.
  */
-function getUserPrefsPath(userId: string): string {
-  return path.join(PREFS_DIR, `${userId}-prefs.json`);
+function getUserPrefsKey(userId: string): string {
+  return `${PREFS_DIR}/${userId}-prefs.json`;
 }
 
 /**
- * Load default preferences from disk.
+ * Load default preferences from storage.
  */
-function loadDefaultPreferences(): UserPreferences {
-  try {
-    const text = fs.readFileSync(DEFAULT_PREFS_PATH, "utf-8");
-    return JSON.parse(text);
-  } catch {
-    return {};
+async function loadDefaultPreferences(): Promise<UserPreferences> {
+  // Default prefs are always local (part of the codebase)
+  const storage = getStorageLocal();
+  const text = await storage.read(DEFAULT_PREFS_KEY);
+  if (text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return {};
+    }
   }
+  return {};
 }
 
 /**
@@ -48,31 +51,32 @@ function loadDefaultPreferences(): UserPreferences {
  * Returns the LazyFile for that user's preferences.
  * Called during authentication to attach prefs to the User object.
  */
-export function ensureUserPrefsFile(userId: string): LazyFile<UserPreferences> {
+export async function ensureUserPrefsFile(userId: string): Promise<LazyFile<UserPreferences>> {
   // Check cache first
   const cached = userPrefsCache.get(userId);
   if (cached) {
     return cached;
   }
 
-  const userPrefsPath = getUserPrefsPath(userId);
+  const userPrefsKey = getUserPrefsKey(userId);
+  const storage = getStorageFor(userPrefsKey);
 
   // If user's prefs file doesn't exist, copy from defaults
-  if (!fs.existsSync(userPrefsPath)) {
-    const defaults = loadDefaultPreferences();
-    fs.mkdirSync(PREFS_DIR, { recursive: true });
-    fs.writeFileSync(userPrefsPath, toJson(defaults), "utf-8");
+  if (!await storage.exists(userPrefsKey)) {
+    const defaults = await loadDefaultPreferences();
+    await storage.write(userPrefsKey, toJson(defaults));
     console.log(`[user-preferences] Created prefs file for user: ${userId}`);
   }
 
   // Create and load the LazyFile
   const lazyFile = new LazyFile<UserPreferences>(
-    userPrefsPath,
+    userPrefsKey,
+    storage,
     {},
     parseJson,
     toJson
   );
-  lazyFile.load();
+  await lazyFile.load();
 
   // Cache it
   userPrefsCache.set(userId, lazyFile);
@@ -84,11 +88,11 @@ export function ensureUserPrefsFile(userId: string): LazyFile<UserPreferences> {
  * Flush all pending user preference writes.
  * Call on shutdown.
  */
-export function flushUserPreferences(): void {
+export async function flushUserPreferences(): Promise<void> {
   for (const [userId, lazyFile] of userPrefsCache) {
     if (lazyFile.hasPendingWrite()) {
       console.log(`[user-preferences] Flushing prefs for user: ${userId}`);
-      lazyFile.flush();
+      await lazyFile.flush();
     }
   }
 }

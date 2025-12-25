@@ -14,15 +14,13 @@ export {
   type OpsConfigAws,
   type OpsConfigContainer,
   type OpsConfigAuth,
-  type OpsConfigDeployQuick as OpsConfigDeployQuick,
-  type OpsConfigPersist
+  type OpsConfigDeployQuick as OpsConfigDeployQuick
 } from "./ops-config.js";
 
 // Deploy (spec-compliant naming)
 export { 
   deployQuick,
   deployCreateZip,
-  deployPersist,
   deployStop,
   deployResume,
   deployStatus,
@@ -123,13 +121,11 @@ export {
 export {
   authenticate,
   callAdminEndpoint,
-  persistRemoteService,
   checkRemoteHealth,
   getRemoteUrl,
   type RemoteAdminOptions,
   type AuthSession,
-  type AdminCallResult,
-  type PersistResult
+  type AdminCallResult
 } from "./remote-admin.js";
 
 // Service Control (high-level)
@@ -142,3 +138,10 @@ export {
   type ServiceControlResult,
   type ServiceStatusResult
 } from "./service-control.js";
+
+// Deploy Quick Handler (server-side)
+export {
+  handleDeployQuick,
+  type DeployQuickHandlerOptions,
+  type DeployQuickHandlerResult
+} from "./deploy-quick-handler.js";

@@ -1,7 +1,7 @@
 import { JournalError } from "./errors.js";
-import fs from "fs-extra";
 import { LazyAppendFile } from "./lazy-append-file.js";
 import { CommandWithArgs } from "./command.js";
+import { getStorageFor } from "./storage.js";
 
 /**
  * Journal - Represents a single trip's journal file.
@@ -25,16 +25,18 @@ function parseJournalLine(line: string, index: number): JournalEntry {
 
 export class Journal {
   private file: LazyAppendFile<JournalEntry>;
+  private storage;
   
   constructor(
     readonly tripName: string,
-    private readonly filePath: string
+    private readonly key: string
   ) {
-    this.file = new LazyAppendFile(filePath, parseJournalLine);
+    this.storage = getStorageFor(key);
+    this.file = new LazyAppendFile(key, this.storage, parseJournalLine);
   }
   
   /**
-   * Load journal from disk. Call once when trip is accessed.
+   * Load journal from storage. Call once when trip is accessed.
    */
   async load(): Promise<void> {
     await this.file.load();
@@ -75,14 +77,14 @@ export class Journal {
       if (tripId !== this.tripName) {
         throw new JournalError("tripId in /newtrip must match requested trip.", 400);
       }
-      if (await fs.pathExists(this.filePath)) {
+      if (await this.storage.exists(this.key)) {
         throw new JournalError(`Trip ${this.tripName} already exists.`, 409);
       }
       await this.file.create(sanitizedLine);
       return;
     }
     
-    if (!(await fs.pathExists(this.filePath))) {
+    if (!await this.storage.exists(this.key)) {
       throw new JournalError(`Trip ${this.tripName} does not exist.`, 404);
     }
     

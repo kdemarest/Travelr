@@ -52,7 +52,7 @@ export interface AuthenticatedRequest extends Request {
 }
 import { loadConfig, getServerPort, shouldExpressServeStatic } from "./config.js";
 import adminRouter, { isMaintenanceMode, getMaintenanceMessage } from "./api-admin.js";
-import { initS3Sync, downloadFromS3, startPeriodicSync, shutdownSync } from "./s3-sync.js";
+import { initStorage } from "./storage.js";
 import { writePidFile, removePidFile } from "./pid-file.js";
 import { Paths } from "./data-paths.js";
 
@@ -60,25 +60,22 @@ const dataTripsDir = Paths.dataTrips;
 const clientDistDir = Paths.clientDist;
 const tripCache = initTripCache(dataTripsDir);
 
-async function ensureDataDir() {
-  await fs.ensureDir(dataTripsDir);
+async function ensureDataDirs() {
+  await fs.ensureDir(Paths.dataTrips);
+  await fs.ensureDir(Paths.dataDiagnostics);
+  await fs.ensureDir(Paths.dataTemp);
 }
 
 async function bootstrap() {
-  await ensureDataDir();
+  await ensureDataDirs();
   await loadConfig();  // Load config early so other modules can use it
   
-  // Initialize S3 sync if configured
+  // Initialize storage backends
   const s3Bucket = process.env.TRAVELR_S3_BUCKET;
-  initS3Sync(s3Bucket);
-  
-  // Download data from S3 on startup (before loading any data)
-  if (s3Bucket) {
-    await downloadFromS3();
-  }
+  initStorage({ s3Bucket });
   
   // Initialize auth module (load user data files)
-  initAuth();
+  await initAuth();
   
   // SECURITY: Verify auth configuration before starting
   // Auth is ALWAYS required - if no users exist, refuse to start
@@ -92,7 +89,7 @@ async function bootstrap() {
   }
   
   await checkSecretsOnStartup();
-  loadExchangeRateCatalog();
+  await loadExchangeRateCatalog();
   await refreshExchangeRateCatalogOnStartup();
 
   const app = express();
@@ -408,11 +405,6 @@ async function bootstrap() {
     
     // Write PID file for quick deploy detection
     writePidFile();
-    
-    // Start periodic S3 sync (every 10 minutes)
-    if (process.env.TRAVELR_S3_BUCKET) {
-      startPeriodicSync(10);
-    }
   });
   
   // Graceful shutdown handler
@@ -423,13 +415,10 @@ async function bootstrap() {
     removePidFile();
     
     // Flush pending writes
-    flushAuth();
-    flushUserPreferences();
-    flushExchangeRateCatalog();
+    await flushAuth();
+    await flushUserPreferences();
+    await flushExchangeRateCatalog();
     await tripCache.flushAllTrips();
-    
-    // Final S3 sync
-    await shutdownSync();
     
     server.close(() => {
       console.log("Server closed");

@@ -36,17 +36,17 @@ function cmdUserpref()
     }
   }
 
-  function handleUserpref(
+  async function handleUserpref(
     command: CommandWithArgs,
     ctx: CommandContext
-  ): CommandHandlerResult {
+  ): Promise<CommandHandlerResult> {
     const parsed = parseUserPref(command);
     const key = parsed.key;
     console.log("Handling /userpref command", { userId: ctx.user.userId, key });
 
     try {
       const normalizedValue = normalizeUserPrefValue(parsed.value);
-      const prefs = ctx.user.prefsFile;
+      const prefs = await ctx.user.getPrefsFile();
       prefs.data[key] = normalizedValue;
       prefs.setDirty();
       

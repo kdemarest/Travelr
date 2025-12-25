@@ -40,17 +40,12 @@ export interface OpsConfigDeployQuick {
   exclude: string[];
 }
 
-export interface OpsConfigPersist {
-  dirs: string[];
-}
-
 export interface OpsConfig {
   name: string;
   aws: OpsConfigAws;
   container: OpsConfigContainer;
   auth: OpsConfigAuth;
   deployQuick: OpsConfigDeployQuick;
-  persist: OpsConfigPersist;
   secrets: string[];
   
   // Computed at load time
@@ -208,15 +203,6 @@ function validateConfig(config: unknown, configPath: string): asserts config is 
   }
   if (!Array.isArray(dq.exclude)) {
     throw new Error(`${configPath}: Missing deployQuick.exclude array`);
-  }
-  
-  // Persist
-  if (typeof c.persist !== "object" || c.persist === null) {
-    throw new Error(`${configPath}: Missing 'persist' section`);
-  }
-  const persist = c.persist as Record<string, unknown>;
-  if (!Array.isArray(persist.dirs)) {
-    throw new Error(`${configPath}: Missing persist.dirs array`);
   }
   
   // Secrets

@@ -23,6 +23,7 @@ function travelrPlugin() {
 
 export default defineConfig({
   root: __dirname,
+  cacheDir: '../../.vite-client',
   plugins: [travelrPlugin()],
   server: {
     port: 5173,

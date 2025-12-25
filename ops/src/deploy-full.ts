@@ -22,7 +22,6 @@ import { loadSecrets } from "./load-secrets.js";
 import { checkPrerequisites } from "./check-prerequisites.js";
 import { setupS3AndInstanceRole } from "./aws-s3-iam.js";
 import { runSmokeTests } from "./smoke-tests.js";
-import { persistRemoteService } from "./remote-admin.js";
 import { dockerBuild } from "./docker-build.js";
 import { ecrLogin, ensureEcrRepository, ecrPush, getAwsAccountId, getEcrImageInfo } from "./aws-ecr.js";
 import { deployToAppRunner, waitForOperation, getServiceStatus, getLatestOperation, getServiceArn, type AppRunnerConfig } from "./aws-apprunner.js";
@@ -118,8 +117,6 @@ export interface DeployFullOptions {
   log?: (message: string) => void;
   /** Skip smoke tests */
   skipSmoke?: boolean;
-  /** Skip persisting data before deploy */
-  skipPersist?: boolean;
   /** Force delete and recreate App Runner service */
   force?: boolean;
   /** Wait for deployment to complete (default: true) */
@@ -184,7 +181,7 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
 
   try {
     // Step 1: Load secrets
-    log("\n[1/10] Loading secrets...");
+    log("\n[1/8] Loading secrets...");
     const secretsResult = loadSecrets({
       required: config.secrets,
       log
@@ -199,7 +196,7 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
     const secrets = { ...secretsResult.secrets, ...passwordHashes };
 
     // Step 2: Check prerequisites
-    log("\n[2/9] Checking prerequisites...");
+    log("\n[2/8] Checking prerequisites...");
     const prereqResult = checkPrerequisites({ log });
     if (!prereqResult.ok) {
       throw new Error(`Prerequisites failed: ${prereqResult.errors.join(", ")}`);
@@ -213,7 +210,7 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
     log(`AWS Account: ${accountId}`);
 
     // Step 3: Setup S3 and IAM
-    log("\n[3/9] Setting up S3 bucket and IAM role...");
+    log("\n[3/8] Setting up S3 bucket and IAM role...");
     const s3IamResult = setupS3AndInstanceRole({
       bucket: config.aws.s3Bucket,
       policyName: `${config.name}-S3Access`,
@@ -231,9 +228,9 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
 
     // Step 4: Smoke tests
     if (options.skipSmoke) {
-      log("\n[4/9] Smoke tests (skipped)");
+      log("\n[4/8] Smoke tests (skipped)");
     } else {
-      log("\n[4/9] Running smoke tests...");
+      log("\n[4/8] Running smoke tests...");
       const smokeResult = await runSmokeTests({
         runTests: true,
         log
@@ -243,29 +240,8 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
       }
     }
 
-    // Step 5: Persist data from running service
-    if (options.skipPersist) {
-      log("\n[5/9] Persist (skipped)");
-    } else {
-      log("\n[5/9] Persisting data from running service...");
-      try {
-        const persistResult = await persistRemoteService({ 
-          config,
-          log 
-        });
-        if (persistResult.ok) {
-          log(`Persisted ${persistResult.filesUploaded ?? 0} files`);
-        } else {
-          log(`Warning: Persist failed (continuing): ${persistResult.error}`);
-        }
-      } catch (err) {
-        // Persist failure is not fatal - service might not be running
-        log(`Warning: Could not persist data: ${err}`);
-      }
-    }
-
-    // Step 6: Build Docker image
-    log("\n[6/9] Building Docker image...");
+    // Step 5: Build Docker image
+    log("\n[5/8] Building Docker image...");
     const imageTag = `${config.name}:latest`;
     
     if (dryRun) {
@@ -284,8 +260,8 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
       }
     }
 
-    // Step 7: Push to ECR
-    log("\n[7/9] Pushing to ECR...");
+    // Step 6: Push to ECR
+    log("\n[6/8] Pushing to ECR...");
     const ecrConfig = {
       region: config.aws.region,
       repository: config.name,
@@ -345,8 +321,8 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
       }
     }
 
-    // Step 8: Deploy to App Runner
-    log("\n[8/9] Deploying to App Runner...");
+    // Step 7: Deploy to App Runner
+    log("\n[7/8] Deploying to App Runner...");
     
     const appRunnerConfig: AppRunnerConfig = {
       region: config.aws.region,
@@ -385,9 +361,9 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
       serviceUrl = deployResult.serviceUrl;
     }
 
-    // Step 9: Wait for deployment
+    // Step 8: Wait for deployment
     if (wait && serviceArn && !dryRun) {
-      log("\n[9/9] Waiting for deployment to complete...");
+      log("\n[8/8] Waiting for deployment to complete...");
       const waitResult = waitForOperation(appRunnerConfig, log);
       if (!waitResult.ok) {
         throw new Error(`Deployment did not complete successfully`);
@@ -411,7 +387,7 @@ export async function deployFull(options: DeployFullOptions = {}): Promise<Deplo
         }
       }
     } else {
-      log("\n[9/9] Wait (skipped)");
+      log("\n[8/8] Wait (skipped)");
     }
 
     // Done!

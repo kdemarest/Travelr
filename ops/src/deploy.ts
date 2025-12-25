@@ -7,7 +7,6 @@
 import { opsConfig, type OpsConfig } from "./ops-config.js";
 import { deployQuick as quickDeployImpl, type DeployQuickOptions, type DeployQuickResult } from "./deploy-quick.js";
 import { stopService, startService, getStatus, waitForService, type ServiceControlOptions } from "./service-control.js";
-import { persistRemoteService, type RemoteAdminOptions, type PersistResult } from "./remote-admin.js";
 import { createDeployableZip, type CreateDeployableZipOptions } from "./create-deployable-zip.js";
 
 // ============================================================================
@@ -29,13 +28,6 @@ export async function deployCreateZip(options?: Partial<CreateDeployableZipOptio
     exclude: options?.exclude ?? config.deployQuick.exclude,
     outputPath: options?.outputPath
   });
-}
-
-/**
- * Persist data from the running service to S3.
- */
-export async function deployPersist(options?: RemoteAdminOptions): Promise<PersistResult> {
-  return persistRemoteService(options);
 }
 
 /**

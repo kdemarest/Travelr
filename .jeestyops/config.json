@@ -46,9 +46,5 @@
     "exclude": ["TEST_*", "node_modules", "dist", ".git"]
   },
   
-  "persist": {
-    "dirs": ["dataTrips", "dataUserPrefs", "dataCountries"]
-  },
-  
   "secrets": ["OPENAI_API_KEY", "GOOGLE_CS_API_KEY", "GOOGLE_CS_CX"]
 }

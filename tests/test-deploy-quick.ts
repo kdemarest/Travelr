@@ -11,7 +11,7 @@
  * It spawns an isolated test server that has NO special knowledge it's being tested.
  * 
  * THE FLOW:
- * 1. Spawns SANDBOX.ts with -copycode flag
+ * 1. Spawns SANDBOX.ts (always copies code)
  *    - Creates TEST_<port>/ directory with copied data AND code
  *    - Uses junction links for node_modules (fast, no copying)
  *    - Server runs from the copied code, isolated from real code
@@ -114,8 +114,8 @@ function runSandbox(args: string[]): { stdout: string; exitCode: number } {
 async function spawnTestServer(): Promise<void> {
   logInfo(`Starting isolated test server...`);
   
-  // Run SANDBOX -spawn -copycode and capture output
-  const { stdout, exitCode } = runSandbox(["-spawn", "-copycode"]);
+  // Run SANDBOX -spawn and capture output (always copies code)
+  const { stdout, exitCode } = runSandbox(["-spawn"]);
   
   if (exitCode !== 0) {
     throw new Error("SANDBOX -spawn failed");

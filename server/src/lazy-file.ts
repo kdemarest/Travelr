@@ -14,7 +14,8 @@
  * 
  * Usage:
  *   const usersFile = new LazyFile<UsersFile>(
- *     '/path/to/users.json',
+ *     'dataUsers/users.json',
+ *     storage,
  *     {},
  *     (text) => JSON.parse(text),              // disassemblerFn
  *     (data) => JSON.stringify(data, null, 2)  // reassemblerFn
@@ -32,8 +33,7 @@
  *   usersFile.flush();
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Storage } from "./storage.js";
 
 export class LazyFile<T> {
   public data: T;
@@ -42,32 +42,38 @@ export class LazyFile<T> {
   private maxDelayTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * @param filePath - Absolute path to the file
+   * @param key - Storage key (e.g., "dataUsers/users.json")
+   * @param storage - Storage backend (local or S3)
    * @param defaultValue - Default value if file doesn't exist or can't be parsed
    * @param disassemblerFn - Converts file text to in-memory data structure
    * @param reassemblerFn - Converts in-memory data structure back to file text
-   * @param delayMs - Debounce delay before writing to disk (default 5000ms)
+   * @param delayMs - Debounce delay before writing (default 5000ms)
    * @param maxDelayMs - Maximum delay before forced write (default 30000ms)
    */
   constructor(
-    private filePath: string,
+    private key: string,
+    private storage: Storage,
     private defaultValue: T,
     private disassemblerFn: (text: string) => T,
     private reassemblerFn: (data: T) => string,
     private delayMs: number = 5000,
     private maxDelayMs: number = 30000
   ) {
-    // Initialize with default; call load() to read from disk
+    // Initialize with default; call load() to read from storage
     this.data = defaultValue;
   }
   
   /**
-   * Load data from disk. Call once at startup.
+   * Load data from storage. Call once at startup.
    */
-  load(): void {
+  async load(): Promise<void> {
     try {
-      const text = fs.readFileSync(this.filePath, "utf-8");
-      this.data = this.disassemblerFn(text);
+      const text = await this.storage.read(this.key);
+      if (text !== null) {
+        this.data = this.disassemblerFn(text);
+      } else {
+        this.data = this.defaultValue;
+      }
     } catch {
       this.data = this.defaultValue;
     }
@@ -82,7 +88,7 @@ export class LazyFile<T> {
   private assertMutableObject(data: T): void {
     if (typeof data !== 'object' || data === null) {
       throw new Error(
-        `LazyFile(${this.filePath}): data must be a mutable object (array or object), ` +
+        `LazyFile(${this.key}): data must be a mutable object (array or object), ` +
         `got ${data === null ? 'null' : typeof data}. Primitives are immutable.`
       );
     }
@@ -94,7 +100,7 @@ export class LazyFile<T> {
   private verifyDataIntegrity(): void {
     if (this.__dataVerifier !== this.data) {
       throw new Error(
-        `LazyFile(${this.filePath}): data reference was reassigned. ` +
+        `LazyFile(${this.key}): data reference was reassigned. ` +
         `You must mutate the existing data object in place, not reassign it.`
       );
     }
@@ -110,19 +116,27 @@ export class LazyFile<T> {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
-    this.debounceTimer = setTimeout(() => this._commitToStorage(), this.delayMs);
+    this.debounceTimer = setTimeout(() => {
+      this._commitToStorage().catch(err => 
+        console.error(`[LazyFile] Failed to write ${this.key}:`, err)
+      );
+    }, this.delayMs);
     
     // Start max delay timer only if not already running
     if (!this.maxDelayTimer) {
-      this.maxDelayTimer = setTimeout(() => this._commitToStorage(), this.maxDelayMs);
+      this.maxDelayTimer = setTimeout(() => {
+        this._commitToStorage().catch(err => 
+          console.error(`[LazyFile] Failed to write ${this.key}:`, err)
+        );
+      }, this.maxDelayMs);
     }
   }
   
   /**
-   * Immediately write to disk and cancel all pending timers.
+   * Immediately write to storage and cancel all pending timers.
    * Call on shutdown to ensure data is persisted.
    */
-  flush(): void {
+  async flush(): Promise<void> {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -131,7 +145,7 @@ export class LazyFile<T> {
       clearTimeout(this.maxDelayTimer);
       this.maxDelayTimer = null;
     }
-    this._commitToStorage();
+    await this._commitToStorage();
   }
   
   /**
@@ -142,9 +156,9 @@ export class LazyFile<T> {
   }
   
   /**
-   * Internal: write data to disk.
+   * Internal: write data to storage.
    */
-  private _commitToStorage(): void {
+  private async _commitToStorage(): Promise<void> {
     this.verifyDataIntegrity();
     
     if (this.debounceTimer) {
@@ -156,15 +170,7 @@ export class LazyFile<T> {
       this.maxDelayTimer = null;
     }
     
-    this.ensureDir();
     const text = this.reassemblerFn(this.data);
-    fs.writeFileSync(this.filePath, text, "utf-8");
-  }
-  
-  private ensureDir(): void {
-    const dir = path.dirname(this.filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    await this.storage.write(this.key, text);
   }
 }

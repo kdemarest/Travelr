@@ -40,12 +40,6 @@ export interface AdminCallResult<T = unknown> {
   statusCode?: number;
 }
 
-export interface PersistResult {
-  ok: boolean;
-  filesUploaded?: number;
-  error?: string;
-}
-
 // ============================================================================
 // Authentication
 // ============================================================================
@@ -165,45 +159,6 @@ export async function callAdminEndpoint<T = unknown>(
       ok: false,
       error: (error as Error).message
     };
-  }
-}
-
-// ============================================================================
-// Persist
-// ============================================================================
-
-/**
- * Call /admin/persist on a running service to sync data to S3.
- */
-export async function persistRemoteService(
-  options: RemoteAdminOptions = {}
-): Promise<PersistResult> {
-  const log = options.log ?? console.log;
-
-  try {
-    const session = await authenticate({ ...options, log });
-    
-    log("Calling /admin/persist to sync data to S3...");
-    
-    const result = await callAdminEndpoint<{ ok: boolean; filesUploaded?: number; error?: string }>(
-      session,
-      "/admin/persist",
-      { method: "POST", log }
-    );
-
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-
-    const data = result.data;
-    if (!data?.ok) {
-      return { ok: false, error: data?.error ?? "Unknown error" };
-    }
-
-    log(`Data persisted to S3: ${data.filesUploaded ?? 0} files`);
-    return { ok: true, filesUploaded: data.filesUploaded };
-  } catch (error) {
-    return { ok: false, error: (error as Error).message };
   }
 }
 

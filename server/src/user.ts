@@ -17,7 +17,7 @@ export class User {
     this.clientDataCache = clientDataCache;
   }
 
-  get prefsFile(): LazyFile<UserPreferences> {
+  async getPrefsFile(): Promise<LazyFile<UserPreferences>> {
     return ensureUserPrefsFile(this.userId);
   }
 }
