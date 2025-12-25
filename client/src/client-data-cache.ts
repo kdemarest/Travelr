@@ -43,11 +43,20 @@ class ClientDataCacheImpl {
   }
 
   /**
-   * Completely replace the cache with new data from the server.
+   * Merge new data from the server into the cache.
+   * Only keys present in newData are updated; existing keys not in newData are preserved.
    */
   update(newData: ClientDataCacheData): void {
-    this.data = { ...newData };
-    console.log("[clientDataCache] Updated with keys:", Object.keys(this.data));
+//    console.log("[clientDataCache.update] called with:", newData);
+//    console.log("[clientDataCache.update] current data before update:", this.data);
+    if (!newData || Object.keys(newData).length === 0) {
+      console.log("[clientDataCache.update] SKIPPING - empty or missing newData");
+      return;
+    }
+    // Merge: only update keys that are present in newData
+    this.data = { ...this.data, ...newData };
+//    console.log("[clientDataCache.update] Merged with keys:", Object.keys(newData));
+//    console.log("[clientDataCache.update] modelList is now:", this.data.modelList);
   }
 
   /**

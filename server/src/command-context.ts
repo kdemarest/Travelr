@@ -25,7 +25,8 @@ export interface CommandHandlerResult {
   message?: string;
   // Stop processing remaining commands in the batch (e.g., failed /trip switch)
   stopProcessingCommands?: boolean;
-  // Switch to a different trip (for /trip and /newtrip)
-  // The command loop will flush current trip and load/create the new one
-  switchTrip?: { tripId: string; create?: boolean };
+  // Switch to a different trip (for /trip)
+  switchTrip?: string;
+  // Create a new trip (for /newtrip) - also switches to it
+  createTrip?: string;
 }

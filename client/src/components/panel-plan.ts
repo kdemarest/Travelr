@@ -14,6 +14,7 @@ export class PanelPlan extends LitElement {
   @property({ type: Array }) lines: PlanLine[] = [];
   @property({ type: String }) focusedKey: string | null = null;
   @property({ attribute: false }) incomingActivityDrag: { uid: string | null; dateKey: string | null } | null = null;
+  @property({ type: Array }) trips: string[] = [];
   @state() private hoveredKey: string | null = null;
   @state() private draggingKey: string | null = null;
   @state() private dropTargetKey: string | null = null;
@@ -49,6 +50,34 @@ export class PanelPlan extends LitElement {
       font-size: 1.25rem;
       margin: 0;
       flex: 1;
+    }
+
+    .trip-select {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #0f172a;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      margin: 0;
+      font-family: inherit;
+      max-width: 100%;
+      text-overflow: ellipsis;
+    }
+
+    .trip-select:hover {
+      color: #3b82f6;
+    }
+
+    .trip-select:focus {
+      outline: none;
+      color: #3b82f6;
+    }
+
+    .trip-select option {
+      font-weight: 400;
+      color: #0f172a;
     }
 
     .date-range {
@@ -238,7 +267,18 @@ export class PanelPlan extends LitElement {
 
     return html`
       <div class="header">
-        <h2 class="title">${displayTitle}</h2>
+        ${this.trips.length > 0
+          ? html`<select
+              class="trip-select"
+              .value=${displayTitle}
+              @change=${this.handleTripChange}
+            >
+              ${this.trips.map(trip => html`
+                <option value=${trip} ?selected=${trip === displayTitle}>${trip}</option>
+              `)}
+            </select>`
+          : html`<h2 class="title">${displayTitle}</h2>`
+        }
         ${dateRange ? html`<span class="date-range">${dateRange}</span>` : null}
       </div>
       <div class="agenda">
@@ -253,6 +293,20 @@ export class PanelPlan extends LitElement {
             )}
       </div>
     `;
+  }
+
+  private handleTripChange(event: Event) {
+    const select = event.target as HTMLSelectElement;
+    const tripId = select.value;
+    if (tripId && tripId !== this.title) {
+      this.dispatchEvent(
+        new CustomEvent("plan-trip-select", {
+          detail: { tripId },
+          bubbles: true,
+          composed: true
+        })
+      );
+    }
   }
 
   private handleDateClick(event: MouseEvent, line: PlanLine) {

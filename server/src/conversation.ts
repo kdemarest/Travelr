@@ -9,6 +9,9 @@ const MAX_MESSAGES = 100;
  * 
  * A Conversation knows its trip name and manages its own LazyFile.
  * Uses a sliding window to keep only the most recent messages.
+ * 
+ * WARNING: The key must be a RELATIVE storage key (e.g., "dataTrips/Japan.conversation"),
+ * not an absolute path. The Storage abstraction adds the basePath.
  */
 export class Conversation {
   private file: LazyFile<string[]>;

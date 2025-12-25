@@ -29,7 +29,8 @@ interface CommandResult {
   // Stop processing remaining commands in the batch
   stopProcessingCommands?: boolean;
   // Switch to a different trip (deferred until after current command completes)
-  switchTrip?: { tripId: string; create?: boolean };
+  switchTrip?: string;
+  createTrip?: string;
 }
 
 function formatSearchResultsForConversation(searchResults: string[]): string {
@@ -37,7 +38,7 @@ function formatSearchResultsForConversation(searchResults: string[]): string {
     return "";
   }
   const lines = searchResults.map((result, index) => `${index + 1}. ${result}`);
-  return `[Search Results]\n${lines.join("\n")}`;
+  return `Search:\n${lines.join("\n")}`;
 }
 
 /**
@@ -65,6 +66,26 @@ function flushCollectedDataToConversation(
   collectedData.length = 0;
 }
 
+/**
+ * Conversation Role System
+ * 
+ * Every conversation entry uses format: "Role:\n<content>"
+ * Valid roles: User, Server, Chatbot, Search, Client
+ */
+type ConversationRole = "User" | "Server" | "Chatbot" | "Search" | "Client";
+
+function appendConversationEntry(
+  conversation: { append: (text: string) => void },
+  role: ConversationRole,
+  content: string
+): void {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return;
+  }
+  conversation.append(`${role}:\n${trimmed}`);
+}
+
 interface CommandLoopState {
   ctx: CommandContext;
   currentModel: TripModel;
@@ -74,11 +95,10 @@ interface CommandLoopState {
 }
 
 /**
- * Handle /trip or /newtrip mid-batch: flush current trip data, switch context to the new trip.
+ * Switch to an existing trip (/trip command).
  */
-async function switchToTripDuringCommandProcessing(
+async function switchToTrip(
   tripId: string,
-  create: boolean,
   tripCache: TripCache,
   state: CommandLoopState
 ): Promise<void> {
@@ -88,7 +108,7 @@ async function switchToTripDuringCommandProcessing(
   // Update the user's last trip
   setLastTripId(state.ctx.user.userId, tripId);
   
-  // Load (or create) the new trip and update context
+  // Load the trip and update context
   state.ctx.trip = await tripCache.getTrip(tripId);
   state.currentModel = rebuildModel(state.ctx.trip);
   state.tripSwitched = true;
@@ -96,11 +116,42 @@ async function switchToTripDuringCommandProcessing(
   // Update client data cache with trip list
   await populateTripList(state.ctx.user);
   
-  // Message to user - this goes to the NEW trip's conversation
-  const verb = create ? "Created" : "Now editing";
-  const switchMessage = `${verb} ${tripId}`;
+  // Message to user
+  const switchMessage = `Now editing ${tripId}`;
   state.infoMessages.push(switchMessage);
-  state.ctx.trip.conversation.append(switchMessage);
+  appendConversationEntry(state.ctx.trip.conversation, "Server", switchMessage);
+}
+
+/**
+ * Create a new trip (/newtrip command).
+ */
+async function createNewTrip(
+  tripId: string,
+  tripCache: TripCache,
+  state: CommandLoopState
+): Promise<void> {
+  // Flush collected data to current trip before switching
+  flushCollectedDataToConversation(state.collectedData, state.ctx.trip.conversation);
+  
+  // Update the user's last trip
+  setLastTripId(state.ctx.user.userId, tripId);
+  
+  // Load the trip (creates in-memory Trip object)
+  state.ctx.trip = await tripCache.getTrip(tripId);
+  
+  // Create the empty journal file on disk
+  await state.ctx.trip.journal.createEmpty();
+  
+  state.currentModel = rebuildModel(state.ctx.trip);
+  state.tripSwitched = true;
+  
+  // Update client data cache with trip list (now includes new trip)
+  await populateTripList(state.ctx.user);
+  
+  // Message to user
+  const createMessage = `Created ${tripId}`;
+  state.infoMessages.push(createMessage);
+  appendConversationEntry(state.ctx.trip.conversation, "Server", createMessage);
 }
 
 // --- Main command processing ---
@@ -125,14 +176,15 @@ async function processCommand(
   const result = await metadata.handler(command, ctx);
 
   // Non-journalable command (has data but no journal write)
-  if (result.data || result.stopProcessingCommands || result.switchTrip) {
+  if (result.data || result.stopProcessingCommands || result.switchTrip || result.createTrip) {
     return { 
       data: result.data, 
       command, 
       journaled: false, 
       message: result.message,
       stopProcessingCommands: result.stopProcessingCommands,
-      switchTrip: result.switchTrip
+      switchTrip: result.switchTrip,
+      createTrip: result.createTrip
     };
   }
 
@@ -218,6 +270,11 @@ async function executeCommandBatch(
           await metadata.enricher(commandObj, enrichContext);
         }
 
+        // For debugging: log commands hitting the Guatemala trip
+        if (tripName.toLowerCase() === "guatemala") {
+          console.log("[api-command] guatemala command", commandObj.toString());
+        }
+
         // 4. Process the fully prepared command
         const result = await processCommand(commandObj, state.ctx);
 
@@ -238,17 +295,18 @@ async function executeCommandBatch(
         // Collect info messages and append to current trip's conversation immediately
         if (result.message) {
           state.infoMessages.push(result.message);
-          state.ctx.trip.conversation.append(result.message);
+          appendConversationEntry(state.ctx.trip.conversation, "Server", result.message);
         }
 
-        // Handle trip switching (/trip or /newtrip)
+        // Handle trip switching (/trip)
         if (result.switchTrip) {
-          await switchToTripDuringCommandProcessing(
-            result.switchTrip.tripId,
-            result.switchTrip.create ?? false,
-            tripCache,
-            state
-          );
+          await switchToTrip(result.switchTrip, tripCache, state);
+          continue;
+        }
+
+        // Handle trip creation (/newtrip)
+        if (result.createTrip) {
+          await createNewTrip(result.createTrip, tripCache, state);
           continue;
         }
 
@@ -270,7 +328,7 @@ async function executeCommandBatch(
       const conversationHistory = state.ctx.trip.conversation.read();
 
       // Append user input and result to conversation
-      state.ctx.trip.conversation.append(`User: ${text.trim()}`);
+      appendConversationEntry(state.ctx.trip.conversation, "User", text.trim());
       
       // Build response
       const responseBody: Record<string, unknown> = {

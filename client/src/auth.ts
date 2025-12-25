@@ -105,7 +105,7 @@ export async function checkAuthRequired(): Promise<boolean> {
   try {
     const response = await fetch("/auth/status");
     const data = await response.json();
-    console.log("[checkAuthRequired] server response:", data);
+//    console.log("[checkAuthRequired] server response:", data);
     return data.authRequired === true;
   } catch (e) {
     // If we can't reach the server, assume auth is required
@@ -117,7 +117,7 @@ export async function checkAuthRequired(): Promise<boolean> {
 // Try to validate cached auth key, returns lastTripId from server if available
 export async function tryAutoLogin(): Promise<{ auth: AuthData; lastTripId: string | null } | null> {
   const stored = getStoredAuth();
-  console.log("[tryAutoLogin] stored auth:", stored);
+//  console.log("[tryAutoLogin] stored auth:", stored);
   if (!stored) {
     return null;
   }
@@ -130,19 +130,26 @@ export async function tryAutoLogin(): Promise<{ auth: AuthData; lastTripId: stri
       deviceId,
       authKey: stored.authKey
     });
-    console.log("[tryAutoLogin] validating with server...");
+//    console.log("[tryAutoLogin] validating with server...");
     const response = await fetch(`/auth?${params}`);
-    console.log("[tryAutoLogin] response ok:", response.ok);
+//    console.log("[tryAutoLogin] response ok:", response.ok);
     if (response.ok) {
       const data = await response.json() as { 
         lastTripId?: string; 
         clientDataCache?: ClientDataCacheData;
       };
-      console.log("[tryAutoLogin] server returned lastTripId:", data.lastTripId);
+//      console.log("[tryAutoLogin] FULL server response data:", JSON.stringify(data));
+//      console.log("[tryAutoLogin] server returned lastTripId:", data.lastTripId);
+//      console.log("[tryAutoLogin] server returned clientDataCache:", data.clientDataCache);
+//      console.log("[tryAutoLogin] clientDataCache keys:", data.clientDataCache ? Object.keys(data.clientDataCache) : "NONE");
       
       // Update client data cache if provided
       if (data.clientDataCache) {
+//        console.log("[tryAutoLogin] calling clientDataCache.update...");
         clientDataCache.update(data.clientDataCache);
+//        console.log("[tryAutoLogin] after update, modelList:", clientDataCache.get("modelList"));
+      } else {
+        console.log("[tryAutoLogin] NO clientDataCache in response!");
       }
       
       return { auth: stored, lastTripId: data.lastTripId || null };
@@ -235,7 +242,7 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   const auth = getStoredAuth();
   const deviceId = getDeviceId();
   
-  console.log("[authFetch] auth:", auth, "deviceId:", deviceId);
+  //console.log("[authFetch] auth:", auth, "deviceId:", deviceId);
   
   if (auth) {
     headers.set("X-Auth-User", auth.user);

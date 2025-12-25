@@ -3,21 +3,28 @@ import { registerCommand } from "./command-registry.js";
 import { TRIP_ID_PATTERN } from "./command-parser-helpers.js";
 import { CommandError } from "./errors.js";
 import type { NewTripCommand } from "./command-types.js";
-import type { CommandHandlerResult } from "./command-context.js";
+import type { CommandHandlerResult, CommandContext } from "./command-context.js";
 import { CommandWithArgs } from "./command.js";
+import { getTripCache } from "./trip-cache.js";
 
 
 function cmdNewtrip()
 {
   async function handleNewtrip(
     command: CommandWithArgs,
+    _ctx: CommandContext
   ): Promise<CommandHandlerResult> {
     const parsed = parseNewTrip(command);
     
-    // Return switchTrip to signal the command loop to create and switch to this trip
-    // The actual trip creation, lastTripId update, and tripList population happen in the loop
+    // Check if trip already exists - error if so
+    const tripCache = getTripCache();
+    if (await tripCache.tripExists(parsed.tripId)) {
+      throw new CommandError(`Trip "${parsed.tripId}" already exists. Use /trip to switch to it.`);
+    }
+    
+    // Return createTrip to signal the command loop to create a new trip
     return {
-      switchTrip: { tripId: parsed.tripId, create: true }
+      createTrip: parsed.tripId
     };
   }
 

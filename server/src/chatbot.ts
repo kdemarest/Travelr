@@ -217,10 +217,32 @@ async function callGptWithContext(
 
   // Append GPT response to conversation
   const modelName = getActiveModel();
+  const sanitizedText = sanitizeAssistantText(result.text);
   const tripForConv = await tripCache.getTrip(tripName);
-  tripForConv.conversation.append(`GPT (${modelName}): ${result.text}`);
+  // Use Role:\n format for conversation entries
+  tripForConv.conversation.append(`Chatbot:\n${sanitizedText}`);
 
-  return { text: result.text, model: modelName };
+  return { text: sanitizedText, model: modelName };
+}
+
+let stripHtml = false;
+function sanitizeAssistantText(text: string): string {
+  if (!text) {
+    return "";
+  }
+  if(!stripHtml)
+	return text;
+  
+  // Strip all HTML tags to ensure slash commands remain plain text
+  let cleaned = text.replace(/<[^>]+>/g, "");
+
+  // Decode a few common entities so "/add" survives if it was escaped
+  cleaned = cleaned
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  return cleaned.trim();
 }
 
 function normalizeMarkedArray(input: unknown): string[] {
@@ -302,5 +324,5 @@ function formatSearchResultsForConversation(results: string[]): string {
   }
   const truncated = results.slice(0, 5);
   const lines = truncated.map((r, i) => `${i + 1}. ${r}`);
-  return `[Search Results]\n${lines.join("\n")}`;
+  return `Search:\n${lines.join("\n")}`;
 }

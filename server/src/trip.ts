@@ -2,6 +2,9 @@
  * Trip - Represents a single trip with its journal and conversation.
  * 
  * Call load() once when trip is accessed, then data access is sync.
+ * 
+ * NOTE: journalKey and conversationKey must be RELATIVE storage keys
+ * (e.g., "dataTrips/Japan.travlrjournal"), not absolute paths.
  */
 
 import { Journal } from "./journal.js";
@@ -14,11 +17,11 @@ export class Trip {
   
   constructor(
     readonly name: string,
-    journalPath: string,
-    conversationPath: string
+    journalKey: string,
+    conversationKey: string
   ) {
-    this.journal = new Journal(name, journalPath);
-    this.conversation = new Conversation(name, conversationPath);
+    this.journal = new Journal(name, journalKey);
+    this.conversation = new Conversation(name, conversationKey);
   }
   
   /**

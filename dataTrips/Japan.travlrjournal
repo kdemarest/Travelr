@@ -911,3 +911,7 @@
 /whoami
 /trip
 /trip
+/add activityType="transport" date="2025-02-08" time="07:30" name="Depart Hiroshima for Inujima" description="Take train from Hiroshima to Saidaiji Station (Okayama), then bus/taxi to Hoden Port. Board ferry to Inujima. Total travel time ~2.5 hours. Plan for early start to maximize time on the island." status="idea" currencyAndPrice="JPY 3000"
+/add activityType="transport" date="2025-02-08" time="17:00" name="Return to Hiroshima from Inujima" description="Ferry from Inujima to Hoden Port, then bus/taxi to Saidaiji Station and train back to Hiroshima. Last ferry departs Inujima ~16:00-17:00. Total return time ~2.5 hours." status="idea" currencyAndPrice="JPY 3000"
+/delete uid="G8gLSHqJLb_" activityType="meal" date="2025-02-02" time="18:00" name="Taco Dinner at Nigiri Taco" description="Enjoy a casual taco dinner featuring fresh ingredients and authentic flavors. Perfect for a relaxed evening meal." reservationNeeded="false" status="booked" partySize="1" currency="" price="" currencyAndPrice="JPY 2500" bookingDate="2025-02-01" notes="Booked at Nigiri Taco" lineNum="916"
+/edit uid="G8gHiLFJ9z_" time="17:00" lineNum="917"

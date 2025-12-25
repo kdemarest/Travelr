@@ -34,7 +34,21 @@ export interface Storage {
 export class StorageLocal implements Storage {
   constructor(private basePath: string = process.cwd()) {}
   
+  /**
+   * Validate that a key is relative, not absolute.
+   * Absolute keys cause path doubling bugs.
+   */
+  private validateKey(key: string): void {
+    if (path.isAbsolute(key)) {
+      throw new Error(
+        `[Storage] Key must be a relative path, not absolute: "${key}". ` +
+        `Use keys like "dataTrips/Japan.travlrjournal", not full paths.`
+      );
+    }
+  }
+  
   private resolvePath(key: string): string {
+    this.validateKey(key);
     return path.join(this.basePath, key);
   }
   

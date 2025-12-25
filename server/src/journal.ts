@@ -8,6 +8,9 @@ import { getStorageFor } from "./storage.js";
  * 
  * A Journal knows its trip name and manages its own LazyAppendFile.
  * Call load() once when trip is accessed, then operations are sync.
+ * 
+ * WARNING: The key must be a RELATIVE storage key (e.g., "dataTrips/Japan.travlrjournal"),
+ * not an absolute path. The Storage abstraction adds the basePath.
  */
 
 
@@ -89,6 +92,13 @@ export class Journal {
     }
     
     this.file.append(sanitizedLine);
+  }
+  
+  /**
+   * Create an empty journal file. Used by /newtrip.
+   */
+  async createEmpty(): Promise<void> {
+    await this.file.createEmpty();
   }
   
   /**

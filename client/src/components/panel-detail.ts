@@ -7,10 +7,17 @@ import { parseCanonicalCommand } from "../command-parse";
 import type { Activity } from "../types";
 import { formatMonthDayLabel } from "../datetime";
 import { clientDataCache } from "../client-data-cache";
+import type { ConversationRole } from "../app-conversation";
 
 export type PanelDetailLogEntry =
-  | { id: string; kind: "text"; text: string; isUser?: boolean; pending?: boolean }
+  | { id: string; kind: "text"; text: string; role?: ConversationRole; isUser?: boolean; pending?: boolean }
   | { id: string; kind: "search"; summary: string; snippets: string[] };
+
+type WebsearchResultBlock = {
+  commandKey: string;
+  query: string;
+  snippets: string[];
+};
 
 type LinkMarkup = {
   type: "activity" | "date";
@@ -75,6 +82,15 @@ export class PanelDetail extends LitElement {
       line-height: 1.4;
       min-width: 0;
       max-width: 100%;
+    }
+
+    .user-message {
+      margin-left: auto;
+      max-width: 80%;
+      background: #e0f2fe;
+      border-radius: 10px 10px 2px 10px;
+      padding: 0.35rem 0.5rem;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
     }
 
     .chat-log-line :where(p, ul, ol, pre, blockquote) {
@@ -169,10 +185,10 @@ export class PanelDetail extends LitElement {
 
     .command-chip-wrapper {
       display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
       margin: 0.1rem 0.3rem 0.1rem 0;
-      flex-wrap: wrap;
     }
 
     .command-full-text {
@@ -363,6 +379,101 @@ export class PanelDetail extends LitElement {
   private chatLogEl?: HTMLDivElement;
   private expandedEntries = new Set<string>();
   private expandedCommandKeys = new Set<string>();
+
+  private parseWebsearchQuery(commandLine: string): string | null {
+    const parsed = parseCanonicalCommand(commandLine);
+    if (!parsed || parsed.keyword.toLowerCase() !== "/websearch") {
+      return null;
+    }
+    const query = parsed.args.query;
+    return typeof query === "string" && query.trim() ? query.trim() : null;
+  }
+
+  private extractWebsearchResultsFromText(text: string, entryKey: string): WebsearchResultBlock[] {
+    // Heuristic: server writes a hidden block in conversation:
+    //   Web search found N results for "query".
+    //   Search:
+    //   1. ...
+    // Map it to the *next* /websearch command in the same message.
+
+    const blocks = this.splitMessageBlocks(text);
+
+    type PendingSearch = { summary: string; snippets: string[] };
+    const pendingSearches: PendingSearch[] = [];
+    let activeSearch: PendingSearch | null = null;
+    let capturing = false;
+
+    const pushActive = () => {
+      if (activeSearch && activeSearch.snippets.length) {
+        pendingSearches.push(activeSearch);
+      }
+      activeSearch = null;
+      capturing = false;
+    };
+
+    // First pass: collect search blocks in order.
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) {
+        continue;
+      }
+      if (/^Web search /i.test(trimmed)) {
+        pushActive();
+        activeSearch = { summary: trimmed, snippets: [] };
+        continue;
+      }
+      if (/^Search:$/i.test(trimmed)) {
+        if (!activeSearch) {
+          activeSearch = { summary: "Search results", snippets: [] };
+        }
+        capturing = true;
+        continue;
+      }
+      if (capturing && activeSearch) {
+        const match = trimmed.match(/^\d+\.\s+(.*)$/);
+        if (match) {
+          activeSearch.snippets.push(match[1]);
+          continue;
+        }
+        // Any non-numbered line ends the capture.
+        pushActive();
+      }
+    }
+    pushActive();
+
+    if (!pendingSearches.length) {
+      return [];
+    }
+
+    // Second pass: find /websearch commands and attach in order.
+    const results: WebsearchResultBlock[] = [];
+    let searchIndex = 0;
+    for (const block of blocks) {
+      if (block.type !== "command") {
+        continue;
+      }
+      for (const cmd of block.lines) {
+        const query = this.parseWebsearchQuery(cmd);
+        if (!query) {
+          continue;
+        }
+        const search = pendingSearches[searchIndex];
+        if (!search) {
+          continue;
+        }
+        const cmdIndexWithinMessage = results.length;
+        results.push({
+          commandKey: `${entryKey}:websearch:${cmdIndexWithinMessage}`,
+          query,
+          snippets: search.snippets
+        });
+        searchIndex += 1;
+      }
+    }
+
+    return results;
+  }
   private expandedIntentKeys = new Set<string>();
   private activityByUid = new Map<string, Activity>();
   private readonly chatLogClickHandler = (event: Event) => this.handleChatLogClick(event);
@@ -447,6 +558,14 @@ export class PanelDetail extends LitElement {
     this.dispatchCommand("/redo");
   }
 
+  private handleModelChange(e: Event) {
+    const select = e.target as HTMLSelectElement;
+    const model = select.value;
+    if (model && model !== "unavailable") {
+      this.dispatchCommand(`/model ${model}`);
+    }
+  }
+
   private dispatchCommand(text: string) {
     if (this.pending) {
       return;
@@ -505,7 +624,8 @@ export class PanelDetail extends LitElement {
 
   private renderChatLogEntry(entry: PanelDetailLogEntry) {
     if (entry.kind === "text") {
-      const classes = { "chat-log-line": true, "user-message": Boolean(entry.isUser) };
+      const isUserRole = entry.role ? entry.role === "User" : Boolean(entry.isUser);
+      const classes = { "chat-log-line": true, "user-message": isUserRole };
       return html`<div class=${classMap(classes)}>${this.renderTextWithLinks(entry.text, entry.id, entry.pending)}</div>`;
     }
     const expanded = this.expandedEntries.has(entry.id);
@@ -529,6 +649,8 @@ export class PanelDetail extends LitElement {
     const modelList = clientDataCache.get<string[]>("modelList") ?? [];
     const activeModel = clientDataCache.get<string>("activeModel") ?? "";
     const chatbotAvailable = clientDataCache.get<boolean>("chatbotAvailable");
+//    console.log("[panel-detail render] modelList:", modelList, "activeModel:", activeModel, "chatbotAvailable:", chatbotAvailable);
+//    console.log("[panel-detail render] full cache:", clientDataCache.getAll());
 
     return html`
       <div style="position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column;">
@@ -538,6 +660,7 @@ export class PanelDetail extends LitElement {
             style="font-size: 0.85em;"
             ?disabled=${chatbotAvailable === false}
             .value=${chatbotAvailable === false ? "unavailable" : activeModel}
+            @change=${(e: Event) => this.handleModelChange(e)}
           >
             ${chatbotAvailable === false
               ? html`<option value="unavailable">Unavailable</option>`
@@ -963,15 +1086,58 @@ export class PanelDetail extends LitElement {
     if (!key) {
       return button;
     }
+
+    // If this is a /websearch command and we can find results in the same message,
+    // render them when expanded.
+    const websearchQuery = this.parseWebsearchQuery(command);
+    let websearchSnippets: string[] | null = null;
+    if (expanded && websearchQuery) {
+      // Look for a matching search block anywhere in the message list, not just this entry.
+      const entryKey = key.split(":")[0];
+      const entryText = this.messages.find((m) => m.id === entryKey && m.kind === "text") as
+        | ({ id: string; kind: "text"; text: string } & PanelDetailLogEntry)
+        | undefined;
+      if (entryText?.kind === "text") {
+        const blocks = this.extractWebsearchResultsFromText(entryText.text, entryKey);
+        const match = blocks.find((b) => b.query === websearchQuery);
+        if (match) {
+          websearchSnippets = match.snippets;
+        }
+      }
+
+      if (!websearchSnippets) {
+        websearchSnippets = this.findSearchSnippetsAcrossMessages(websearchQuery);
+      }
+    }
+
     return html`<span class="command-chip-wrapper">
       ${button}
       ${expanded ? html`<span class="command-full-text">${this.renderCommandFullText(command)}</span>` : null}
+      ${expanded && websearchSnippets?.length
+        ? html`<ol class="search-results">
+            ${websearchSnippets.map((snippet, index) => html`<li>${index + 1}. ${this.renderDateLinkedTextNode(snippet)}</li>`)}
+          </ol>`
+        : null}
     </span>`;
   }
 
   private renderCommandFullText(command: string) {
     const formatted = command.replace(/\s+(?=[A-Za-z0-9_-]+=(?:"(?:\\.|[^"])*"|\S)+)/g, "\n");
     return this.renderDateLinkedTextNode(formatted);
+  }
+
+  private findSearchSnippetsAcrossMessages(query: string): string[] | null {
+    for (const entry of this.messages) {
+      if (entry.kind !== "text") {
+        continue;
+      }
+      const blocks = this.extractWebsearchResultsFromText(entry.text, entry.id);
+      const match = blocks.find((b) => b.query === query);
+      if (match) {
+        return match.snippets;
+      }
+    }
+    return null;
   }
 
   private handleCommandChipToggle(key?: string, activityUid?: string | null) {

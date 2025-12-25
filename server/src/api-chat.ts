@@ -35,7 +35,7 @@ export function createChatHandler(tripCache: TripCache) {
       const conversationHistory = conversation.read();
 
       // Append user input to conversation
-      conversation.append(`User: ${normalizedInput}`);
+      conversation.append(`User:\n${normalizedInput}`);
 
       const result = await sendChatCompletion(normalizedInput, {
         temperature: 0.3,
@@ -52,7 +52,7 @@ export function createChatHandler(tripCache: TripCache) {
 
       // Append GPT response to conversation
       const modelName = getActiveModel();
-      conversation.append(`GPT (${modelName}): ${result.text}`);
+      conversation.append(`Chatbot:\n${result.text}`);
 
       res.json({ ok: true, text: result.text, model: modelName });
     } catch (error) {

@@ -24,6 +24,7 @@ const USER_STATE_KEY = "dataUsers/userState.json";
 // Per-user state (survives across devices)
 interface UserState {
   lastTripId?: string;
+  lastModel?: string;
 }
 type UserStateFile = Record<string, UserState>;
 
@@ -55,6 +56,18 @@ let userStateFile: LazyFile<UserStateFile>;
 
 // O(1) lookup cache for Bearer token auth: authKey -> {userId, deviceId}
 const authKeyCache = new Map<string, { userId: string; deviceId: string }>();
+
+// In-memory cache keyed by userId so client data survives per-request user creation
+const clientDataCacheByUser = new Map<string, ClientDataCache>();
+
+function getClientDataCache(userId: string): ClientDataCache {
+  let cache = clientDataCacheByUser.get(userId);
+  if (!cache) {
+    cache = new ClientDataCache();
+    clientDataCacheByUser.set(userId, cache);
+  }
+  return cache;
+}
 
 // ============================================================================
 // System Users (defined by env vars, never stored in users.json)
@@ -235,6 +248,31 @@ export function setLastTripId(userId: string, tripId: string): void {
   userStateFile.setDirty();
 }
 
+/**
+ * Get the last GPT model selected by a user.
+ */
+export function getLastModel(userId: string): string | null {
+  const state = userStateFile.data;
+  return state[userId]?.lastModel ?? null;
+}
+
+/**
+ * Remember the last GPT model selected by a user.
+ */
+export function setLastModel(userId: string, model: string): void {
+  const state = userStateFile.data;
+
+  if (state[userId]?.lastModel === model) {
+    return;
+  }
+
+  if (!state[userId]) {
+    state[userId] = {};
+  }
+  state[userId].lastModel = model;
+  userStateFile.setDirty();
+}
+
 // ============================================================================
 // Password Hashing (scrypt)
 // ============================================================================
@@ -402,7 +440,7 @@ export function authenticateAndFetchUser(userId: string, deviceId: string | unde
       
       return {
         valid: true,
-        user: new User(userId, isUserAdminSync(userId), new ClientDataCache())
+        user: new User(userId, isUserAdminSync(userId), getClientDataCache(userId))
       };
     }
   } else {
@@ -414,7 +452,7 @@ export function authenticateAndFetchUser(userId: string, deviceId: string | unde
           // Valid auth, but don't update lastSeen without knowing which device
           return {
             valid: true,
-            user: new User(userId, isUserAdminSync(userId), new ClientDataCache())
+            user: new User(userId, isUserAdminSync(userId), getClientDataCache(userId))
           };
         }
       }
@@ -486,7 +524,7 @@ export function authenticateWithBearerToken(authKey: string): User | null {
     authsFile.setDirty();
   }
   
-  return new User(userId, isUserAdminSync(userId), new ClientDataCache());
+  return new User(userId, isUserAdminSync(userId), getClientDataCache(userId));
 }
 
 /**
@@ -579,7 +617,7 @@ export async function authenticateWithPasswordDebug(userId: string, password: st
     }
 
     return { 
-      user: new User(userId, userRecord.isAdmin === true, new ClientDataCache()),
+      user: new User(userId, userRecord.isAdmin === true, getClientDataCache(userId)),
       debug: { ...debug, success: true }
     };
   } catch (err) {

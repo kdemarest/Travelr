@@ -4,6 +4,7 @@ import { registerCommand } from "./command-registry.js";
 import type { CommandContext, CommandHandlerResult } from "./command-context.js";
 import { CommandWithArgs } from "./command.js";
 import { populateModelList } from "./cache-population.js";
+import { setLastModel } from "./auth.js";
 
 
 function cmdModel()
@@ -32,6 +33,7 @@ function cmdModel()
 
     try {
       setActiveModel(target);
+      setLastModel(ctx.user.userId, target);
       // Update cache again after change
       await populateModelList(ctx.user);
       return {

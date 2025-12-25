@@ -1,11 +1,11 @@
 {
   "ken": {
     "device-716980449a5543de": {
-      "authKey": "auth-e173e6b2e98348d8671ee03acf770bcabee96e62610ca744c621d34a7bf48d27",
+      "authKey": "auth-bcb8fb7d4bd84809da06f562f8f1f3ec82c87844674cceee9147f87454d1deb0",
       "label": "Windows / Chrome",
       "city": "localhost",
       "firstSeen": "2025-12-01",
-      "lastSeen": "2025-12-04"
+      "lastSeen": "2025-12-25"
     },
     "device-a00cb13cf7f343ac": {
       "authKey": "auth-98f4dbdbfa3da49937f4f6cc0c433a33e730be6399727c85bc8b4a025b13d69b",

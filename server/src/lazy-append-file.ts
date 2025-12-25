@@ -130,6 +130,23 @@ export class LazyAppendFile<T> {
     this.loaded = true;
   }
   
+  /**
+   * Create an empty file. Used by /newtrip to create the journal file.
+   */
+  async createEmpty(): Promise<void> {
+    if (await this.storage.exists(this.key)) {
+      throw new Error(`File already exists: ${this.key}`);
+    }
+    
+    // Write empty file immediately
+    await this.storage.write(this.key, "");
+    
+    // Initialize empty cache
+    this.lines = [];
+    this.parsed = [];
+    this.loaded = true;
+  }
+  
   private scheduleFlush(): void {
     // Start max delay timer on first pending append (guarantees write within maxDelayMs)
     if (!this.maxDelayTimer) {

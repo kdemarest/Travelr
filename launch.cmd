@@ -12,6 +12,7 @@ if not defined TRAVELR_CONFIG (
 )
 
 start "Travelr API Server" cmd /k "pushd ""%ROOT%"" && npm run dev --workspace server"
+timeout /t 2 >nul
 start "Travelr Web Server" cmd /k "pushd ""%ROOT%"" && npm run dev --workspace client"
 
 echo.

@@ -26,9 +26,8 @@ function cmdTrip()
 
     if (await tripCache.tripExists(target)) {
       // Return switchTrip to signal the command loop to switch to this trip
-      // The actual switch, lastTripId update, and model load happen in the loop
       return {
-        switchTrip: { tripId: target }
+        switchTrip: target
       };
     }
 

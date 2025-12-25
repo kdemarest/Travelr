@@ -143,7 +143,6 @@ export class PanelDay extends LitElement {
 
     .list {
       flex: 1;
-        gap: 0;
       display: flex;
       flex-direction: column;
       gap: 0.25rem;
@@ -158,15 +157,14 @@ export class PanelDay extends LitElement {
       font-size: 0.95rem;
       cursor: pointer;
       border-radius: 6px;
-        margin: 0 0 0.25rem 0;
+      margin: 0 0 0.25rem 0;
       padding: 0 0.25rem 0 1.5rem;
-
-      .activity:last-child {
-        margin-bottom: 0;
-      }
-
       border: 1px solid transparent;
       position: relative;
+    }
+
+    .activity:last-child {
+      margin-bottom: 0;
     }
 
     .activity:focus-visible,
@@ -259,6 +257,35 @@ export class PanelDay extends LitElement {
       transform: scale(0.85);
       font-size: 0.9em;
     }
+
+    .delete-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border: none;
+      background: transparent;
+      color: #94a3b8;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border-radius: 3px;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      flex-shrink: 0;
+      margin-left: 0.25rem;
+    }
+
+    .activity:hover .delete-button,
+    .activity:focus-visible .delete-button {
+      opacity: 1;
+    }
+
+    .delete-button:hover {
+      background: #fee2e2;
+      color: #dc2626;
+    }
   `];
 
   render() {
@@ -342,7 +369,24 @@ export class PanelDay extends LitElement {
       <span class="time">${item.displayTime}</span>
       <span class="label">${item.label}</span>
       ${this.renderActivityIndicators(activity)}
+      <button
+        class="delete-button"
+        title="Delete activity"
+        @click=${(e: MouseEvent) => this.handleDeleteClick(e, activity)}
+      >✕</button>
     </div>`;
+  }
+
+  private handleDeleteClick(event: MouseEvent, activity: Activity) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.dispatchEvent(
+      new CustomEvent("day-activity-delete", {
+        detail: { uid: activity.uid },
+        bubbles: true,
+        composed: true
+      })
+    );
   }
 
   private handleActivityClick(event: MouseEvent, item: DayEntry, activity: Activity, index: number) {

@@ -189,6 +189,24 @@ export class PanelActivity extends LitElement {
       gap: 0.25rem;
     }
 
+    .segment-list {
+      margin: 0.35rem 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+
+    .segment-line {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.9rem;
+      color: #0f172a;
+    }
+
+    .segment-label {
+      color: #475569;
+      margin-right: 0.5rem;
+    }
+
     .extra-item {
       font-size: 0.9rem;
       color: #475569;
@@ -226,6 +244,9 @@ export class PanelActivity extends LitElement {
       this.countries ?? []
     );
     const description = extractDescription(activity);
+    const flightSegments = activity.activityType?.trim().toLowerCase() === "flight"
+      ? buildFlightSegments(activity)
+      : [];
     const extras = buildExtraFields(activity);
     const showReservationWarning = shouldShowReservationWarning(activity);
     const priceClass = priceIsValid ? "price-value" : "price-value price-warning";
@@ -265,6 +286,16 @@ export class PanelActivity extends LitElement {
             </div>`
           : null}
         ${description ? html`<div class="line">${this.renderDateLinkedText(description)}</div>` : null}
+        ${flightSegments.length
+          ? html`<div class="segment-list">
+              ${flightSegments.map((segment) => html`
+                <div class="segment-line">
+                  <span class="segment-label">Segment ${segment.index}:</span>
+                  <span>${segment.display}</span>
+                </div>
+              `)}
+            </div>`
+          : null}
         ${extras.length
           ? html`<ul class="extra-list">
               ${extras.map(
@@ -689,6 +720,7 @@ function extractDescription(activity: Activity): string | null {
 }
 
 function buildExtraFields(activity: Activity) {
+  const entries = Object.entries(activity) as Array<[string, unknown]>;
   const omit = new Set([
     "uid",
     "date",
@@ -708,9 +740,14 @@ function buildExtraFields(activity: Activity) {
 
   if (activity.activityType?.trim().toLowerCase() === "flight") {
     ["airport", "arriveAirport", "arriveDate", "arriveTime", "stops"].forEach((key) => omit.add(key));
+    // Hide segmentN and layoverN fields; they are rendered separately
+    for (const [key] of entries) {
+      if (/^segment\d+$/i.test(key)) {
+        omit.add(key);
+      }
+    }
   }
 
-  const entries = Object.entries(activity) as Array<[string, unknown]>;
   const extras = entries
     .filter(([key, value]) => {
       if (omit.has(key)) return false;
@@ -761,4 +798,80 @@ declare global {
   interface HTMLElementTagNameMap {
     "panel-activity": PanelActivity;
   }
+}
+
+interface ParsedSegment {
+  index: number;
+  display: string;
+}
+
+function buildFlightSegments(activity: Activity): ParsedSegment[] {
+  const entries = Object.entries(activity as Record<string, unknown>);
+  const segmentEntries = entries
+    .map(([key, value]) => {
+      const match = key.match(/^segment(\d+)$/i);
+      if (!match) return null;
+      const index = Number(match[1]);
+      if (!Number.isFinite(index)) return null;
+      if (typeof value !== "string") return null;
+      const parsed = parseFlightSegment(value);
+      if (!parsed) return null;
+      return { index, display: parsed };
+    })
+    .filter((entry): entry is { index: number; display: string } => entry !== null)
+    .sort((a, b) => a.index - b.index);
+
+  return segmentEntries;
+}
+
+function parseFlightSegment(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) {
+    return null;
+  }
+
+  let cursor = 0;
+  const len = text.length;
+
+  const readUntil = (stop: (ch: string) => boolean) => {
+    const start = cursor;
+    while (cursor < len && !stop(text[cursor])) {
+      cursor += 1;
+    }
+    return text.slice(start, cursor).trim();
+  };
+
+  const readUntilDigit = () => readUntil((ch) => /[0-9]/.test(ch));
+  const readUntilLetter = () => readUntil((ch) => /[A-Za-z]/.test(ch));
+
+  const airline = readUntilDigit();
+  const flight = readUntilLetter();
+  const departAirport = readUntilDigit();
+  const departTime = readUntilLetter();
+  const arriveAirport = readUntilDigit();
+  const arriveTime = text.slice(cursor).trim();
+
+  const core = [departAirport, departTime, arriveAirport, arriveTime]
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  const tail = [airline, flight]
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .join(" ")
+    .trim();
+
+  const parts: string[] = [];
+  if (core.length) {
+    parts.push(core.join("  "));
+  }
+  if (tail) {
+    parts.push(tail);
+  }
+
+  if (!parts.length) {
+    return null;
+  }
+
+  return parts.join("  ");
 }

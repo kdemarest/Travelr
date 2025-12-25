@@ -56,7 +56,7 @@ export function buildDayItems(
       items.push({
         time: fallbackTime,
         displayTime: resolveDisplayTime(entry.activity, fallbackTime),
-        label: describeActivity(entry.activity),
+        label: buildDayLabel(entry.activity, describeActivity),
         activity: entry.activity,
         isPlaceholder: false,
         isMarked: isMarked(entry.activity, markedSet)
@@ -85,7 +85,7 @@ export function buildDayItems(
         items.push({
           time: normalizedTime,
           displayTime: resolveDisplayTime(entry.activity, normalizedTime),
-          label: describeActivity(entry.activity),
+          label: buildDayLabel(entry.activity, describeActivity),
           activity: entry.activity,
           isPlaceholder: false,
           isMarked: isMarked(entry.activity, markedSet)
@@ -103,7 +103,7 @@ export function buildDayItems(
       items.push({
         time: normalizedTime,
         displayTime: resolveDisplayTime(entry.activity, normalizedTime),
-        label: describeActivity(entry.activity),
+        label: buildDayLabel(entry.activity, describeActivity),
         activity: entry.activity,
         isPlaceholder: false,
         isMarked: isMarked(entry.activity, markedSet)
@@ -159,4 +159,20 @@ function resolveDisplayTime(activity: Activity | null, fallback: string): string
   }
   const raw = activity.time?.trim();
   return raw && raw.length ? raw : fallback;
+}
+
+function buildDayLabel(activity: Activity, describeActivity: (activity: Activity) => string): string {
+  const base = describeActivity(activity);
+  const type = activity.activityType?.trim().toLowerCase();
+  if (type !== "flight") {
+    return base;
+  }
+  const conf = (activity as Record<string, unknown>).confNum;
+  if (typeof conf === "string") {
+    const trimmed = conf.trim();
+    if (trimmed) {
+      return `${trimmed} ${base}`;
+    }
+  }
+  return base;
 }

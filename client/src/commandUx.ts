@@ -5,6 +5,15 @@ import { parseCanonicalCommand } from "./command-parse";
 import { parseChatPieces, isCommandPiece, reconstructText, type ChatPiece } from "./chat-pieces";
 import { authFetch } from "./auth";
 import { clientDataCache, type ClientDataCacheData } from "./client-data-cache";
+import type { ConversationRole } from "./app-conversation";
+
+/**
+ * Format a client-generated message for conversation display.
+ * Uses "Client:\n<content>" format to match the role system.
+ */
+function clientMessage(content: string): string {
+  return `Client:\n${content}`;
+}
 
 export interface CommandProcessingResult {
   ok: boolean;
@@ -43,7 +52,7 @@ export interface CommandUxOptions {
   focusSummary: { focusedDate: string | null; focusedActivityUid: string | null };
   markedActivities?: string[];
   markedDates?: string[];
-  appendMessage: (message: string, options?: { isUser?: boolean; pending?: boolean }) => string;
+  appendMessage: (message: string, options?: { role?: ConversationRole; pending?: boolean }) => string;
   updateMessage: (id: string, text: string, options?: { pending?: boolean }) => void;
   setSending: (sending: boolean) => void;
   rememberTripModel: (model: TripModel) => void;
@@ -63,7 +72,7 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
   let pendingMessageId: string | null = null;
   if (options.echoCommands ?? true) {
     pendingMessageId = options.appendMessage(preparedText, { 
-      isUser: true, 
+      role: "User", 
       pending: hasJournalableCommands 
     });
   }
@@ -88,7 +97,7 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
       if (pendingMessageId) {
         options.updateMessage(pendingMessageId, preparedText, { pending: false });
       }
-      options.appendMessage(`✗ ${payload.error ?? response.statusText}`);
+      options.appendMessage(clientMessage(`✗ ${payload.error ?? response.statusText}`), { role: "Client" });
       return { ok: false, payload };
     }
 
@@ -100,8 +109,13 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
       options.updateMessage(pendingMessageId, finalText, { pending: false });
     }
 
+    // Update client data cache if server sent new data
+    if (payload.clientDataCache) {
+      clientDataCache.update(payload.clientDataCache);
+    }
+
     if (payload.message && !payload.searchResults) {
-      options.appendMessage(`ℹ ${payload.message}`);
+      options.appendMessage(clientMessage(`ℹ ${payload.message}`), { role: "Client" });
     }
 
     if (payload.model) {
@@ -110,12 +124,7 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
 
     const totalExecuted = payload.executedCommands ?? 0;
     if (totalExecuted > 0) {
-      options.appendMessage(`✓ Executed ${totalExecuted} command(s)`);
-    }
-
-    // Update client data cache if server sent new data
-    if (payload.clientDataCache) {
-      clientDataCache.update(payload.clientDataCache);
+      options.appendMessage(clientMessage(`✓ Executed ${totalExecuted} command(s)`), { role: "Client" });
     }
 
     // Poll for chatbot responses if a task was queued
@@ -129,7 +138,7 @@ export async function processUserCommand(options: CommandUxOptions): Promise<Com
       options.updateMessage(pendingMessageId, preparedText, { pending: false });
     }
     const message = error instanceof Error ? error.message : String(error);
-    options.appendMessage(`Network error: ${message}`);
+    options.appendMessage(clientMessage(`Network error: ${message}`), { role: "Client" });
     return { ok: false };
   } finally {
     options.setSending(false);
@@ -148,7 +157,7 @@ async function pollChatbotResponses(
   while (currentGuid) {
     // Check if user requested stop
     if (options.shouldStop?.()) {
-      options.appendMessage("ℹ Chatbot response cancelled.");
+      options.appendMessage(clientMessage("ℹ Chatbot response cancelled."), { role: "Client" });
       return;
     }
     
@@ -157,19 +166,18 @@ async function pollChatbotResponses(
       const result = (await response.json().catch(() => ({}))) as ChatbotPollResponse;
       
       if (!response.ok) {
-        options.appendMessage(`Chatbot error: ${result.error ?? response.statusText}`);
+        options.appendMessage(clientMessage(`Chatbot error: ${result.error ?? response.statusText}`), { role: "Client" });
         return;
       }
       
       if (result.error) {
-        options.appendMessage(`Chatbot error: ${result.error}`);
+        options.appendMessage(clientMessage(`Chatbot error: ${result.error}`), { role: "Client" });
         return;
       }
       
       // Display GPT response
       if (result.text) {
-        const modelLabel = result.model ?? "chat";
-        options.appendMessage(`GPT (${modelLabel}): ${result.text}`);
+        options.appendMessage(`Chatbot:\n${result.text}`, { role: "Chatbot" });
       }
       
       // Update model if GPT executed commands
@@ -183,14 +191,14 @@ async function pollChatbotResponses(
       }
       
       if (result.executedCommands && result.executedCommands > 0) {
-        options.appendMessage(`✓ Chatbot executed ${result.executedCommands} command(s)`);
+        options.appendMessage(clientMessage(`✓ Chatbot executed ${result.executedCommands} command(s)`), { role: "Client" });
       }
       
       // Continue polling if there's a follow-up
       currentGuid = result.pendingChatbot ?? null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      options.appendMessage(`Network error polling chatbot: ${message}`);
+      options.appendMessage(clientMessage(`Network error polling chatbot: ${message}`), { role: "Client" });
       return;
     }
   }

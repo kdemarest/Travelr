@@ -32,7 +32,8 @@ import "./cmd-whoami.js";
 import { TripCache, initTripCache } from "./trip-cache.js";
 import {
   DEFAULT_MODEL,
-  checkOpenAIConnection
+  checkOpenAIConnection,
+  getActiveModel
 } from "./gpt.js";
 import { loadExchangeRateCatalog, refreshExchangeRateCatalogOnStartup, flushExchangeRateCatalog } from "./exchange.js";
 import { createChatHandler } from "./api-chat.js";
@@ -137,16 +138,20 @@ async function bootstrap() {
     const deviceId = req.query.deviceId as string;
     const authKey = req.query.authKey as string;
     
+    console.log("[GET /auth] validating auth for user:", userIdParam);
     const { valid, user } = authenticateAndFetchUser(userIdParam, deviceId, authKey);
     if (valid && user) {
       const lastTripId = getLastTripId(user.userId);
       
       // Populate bootstrap data for client
+      console.log("[GET /auth] populating bootstrap data...");
       await populateBootstrapData(user);
       const clientDataCache = user.clientDataCache.getData();
+      console.log("[GET /auth] clientDataCache to send:", JSON.stringify(clientDataCache));
       
       res.json({ ok: true, userId: user.userId, lastTripId, clientDataCache });
     } else {
+      console.log("[GET /auth] auth invalid");
       res.status(401).json({ ok: false, error: "Invalid or expired auth key" });
     }
   });
@@ -340,7 +345,8 @@ async function bootstrap() {
   app.get("/api/gpt/health", async (_req, res) => {
     try {
       await checkOpenAIConnection();
-      res.json({ ok: true, model: DEFAULT_MODEL, message: `ChatGPT ${DEFAULT_MODEL} connected.` });
+      const model = getActiveModel();
+      res.json({ ok: true, model, message: `ChatGPT ${model} connected.` });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       res.status(502).json({ ok: false, error: message });

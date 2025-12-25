@@ -3,11 +3,17 @@
  * 
  * Owns the concept of "which trips exist". Provides access to
  * Trip instances which own their journal and conversation.
+ * 
+ * NOTE: Storage keys must be RELATIVE paths (e.g., "dataTrips/Japan.travlrjournal").
+ * The Storage abstraction adds the basePath. Direct fs operations still use absolute paths.
  */
 
 import path from "node:path";
 import fs from "fs-extra";
 import { Trip } from "./trip.js";
+
+// Relative key prefix for Storage abstraction
+const TRIPS_KEY_PREFIX = "dataTrips";
 
 let globalTripCache: TripCache | null = null;
 
@@ -28,12 +34,18 @@ export class TripCache {
   
   constructor(private readonly dataDir: string) {}
   
-  private getJournalPath(tripName: string): string {
+  // Absolute paths for direct fs operations (readdir, pathExists)
+  private getAbsoluteJournalPath(tripName: string): string {
     return path.join(this.dataDir, `${tripName}.travlrjournal`);
   }
   
-  private getConversationPath(tripName: string): string {
-    return path.join(this.dataDir, `${tripName}.conversation`);
+  // Relative keys for Storage abstraction (Journal, Conversation)
+  private getJournalKey(tripName: string): string {
+    return `${TRIPS_KEY_PREFIX}/${tripName}.travlrjournal`;
+  }
+  
+  private getConversationKey(tripName: string): string {
+    return `${TRIPS_KEY_PREFIX}/${tripName}.conversation`;
   }
   
   // ========== Trip-level operations ==========
@@ -53,7 +65,7 @@ export class TripCache {
    * Check if a trip exists.
    */
   async tripExists(tripName: string): Promise<boolean> {
-    return fs.pathExists(this.getJournalPath(tripName));
+    return fs.pathExists(this.getAbsoluteJournalPath(tripName));
   }
   
   /**
@@ -64,8 +76,8 @@ export class TripCache {
     if (!trip) {
       trip = new Trip(
         tripName,
-        this.getJournalPath(tripName),
-        this.getConversationPath(tripName)
+        this.getJournalKey(tripName),
+        this.getConversationKey(tripName)
       );
       await trip.load();
       this.trips.set(tripName, trip);
